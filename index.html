@@ -82,4 +82,212 @@
 
     <div class="card mt">
       <div class="body">
-        <div class="row" style="gap:
+        <div class="row" style="gap:6px; margin-bottom:6px;">
+          <strong id="title">載入中…</strong>
+        </div>
+        <canvas id="chart"></canvas>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ✅ 固定使用 gviz CSV（若資料不在第一分頁，將 gid 改成對的）
+    const CSV_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
+
+    const el = {
+      city: document.getElementById('city'),
+      dist: document.getElementById('dist'),
+      dtype: document.getElementById('dtype'),
+      range: document.getElementById('range'),
+      median: document.getElementById('median'),
+      title: document.getElementById('title'),
+      download: document.getElementById('download'),
+      canvas: document.getElementById('chart'),
+      status: document.getElementById('status'),
+      meta: document.getElementById('meta'),
+    };
+
+    let rows = [];
+    let chart;
+
+    function uniq(arr){ return Array.from(new Set(arr.filter(Boolean))); }
+    function setStatus(text, bad=false){ el.status.textContent = text; el.status.className = 'pill' + (bad?' bad':''); }
+    function fmtYM(d){ const y=d.getFullYear(); const m=(d.getMonth()+1).toString().padStart(2,'0'); return `${y}-${m}`; }
+
+    // 解析多種「交易年月」：YYYY-MM / YYYY/MM / YYYYMM / YYYY-MM-DD / 民國年 11307、113-07
+    function parseYM(cell){
+      if(cell == null) return NaN;
+      let s = String(cell).trim();
+      if(!s) return NaN;
+      s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'');
+      if(/^\d{5,6}$/.test(s)){ // YYYYMM 或 ROCYYMM
+        const y = parseInt(s.slice(0, s.length-2), 10);
+        const m = parseInt(s.slice(-2), 10);
+        if(y <= 1911) return new Date(1911 + y, m-1, 1); // 民國年
+        if(y >= 1900) return new Date(y, m-1, 1);        // 西元 YYYYMM
+      }
+      const m1 = s.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
+      if(m1){ const y = parseInt(m1[1],10), mo=parseInt(m1[2],10); if(y >= 1900 && mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
+      const m2 = s.match(/^(\d{2,3})-(\d{1,2})$/); // 民國年 113-07
+      if(m2){ const y = 1911 + parseInt(m2[1],10); const mo = parseInt(m2[2],10); if(mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
+      const d = new Date(s); if(!isNaN(d)) return new Date(d.getFullYear(), d.getMonth(), 1);
+      return NaN;
+    }
+
+    // 表頭修整（去空白）
+    function normalizeHeaders(obj){
+      const out={}; Object.keys(obj||{}).forEach(k=>{ const nk=String(k||'').trim(); out[nk]=obj[k]; });
+      return out;
+    }
+
+    // 欄位標準化與容錯
+    function normalizeRows(data){
+      const norm = (data||[]).map(r=> normalizeHeaders(r)).map(r=>{
+        const ym = parseYM(r['交易年月']); // Date 物件
+        return {
+          ...r,
+          '縣市': r['縣市'],
+          '鄉鎮市區': r['鄉鎮市區'],
+          '資料別': (r['資料別'] ?? '').toString().trim().toLowerCase(),
+          '成交量': Number(String(r['成交量']||'').replace(/,/g,'')) || 0,
+          '均價_萬元每坪_平均': Number(r['均價_萬元每坪_平均']) || Number(r['均價_萬元每坪_平均數']) || Number(r['均價_每坪_平均']) || Number(r['平均單價']) || NaN,
+          '均價_萬元每坪_中位數': Number(r['均價_萬元每坪_中位數']) || Number(r['均價_每坪_中位數']) || NaN,
+          ym
+        };
+      }).filter(r=> !isNaN(r.ym) && r['縣市'] && r['鄉鎮市區']);
+      return norm;
+    }
+
+    function populateCities(){
+      const cs = uniq(rows.map(r=>r['縣市']));
+      el.city.innerHTML = cs.map(c=>`<option value="${c}">${c}</option>`).join('');
+      el.city.value = cs[0] || '';
+      populateDistricts();
+    }
+    function populateDistricts(){
+      const ds = uniq(rows.filter(r=>r['縣市']===el.city.value).map(r=>r['鄉鎮市區']));
+      el.dist.innerHTML = ds.map(d=>`<option value="${d}">${d}</option>`).join('');
+      el.dist.value = ds[0] || '';
+      draw();
+    }
+
+    function currentSeries(){
+      const base = rows.filter(r=> r['縣市']===el.city.value && r['鄉鎮市區']===el.dist.value);
+      const filtered = el.dtype.value==='all' ? base : base.filter(r=> r['資料別']===el.dtype.value);
+      const sorted = filtered.sort((a,b)=> a.ym - b.ym);
+      const months = Number(el.range.value || 24);
+      const lastN = sorted.slice(-months);
+      const priceKey = el.median.checked ? '均價_萬元每坪_中位數' : '均價_萬元每坪_平均';
+      // ✅ 用 Date 當 x，避免時間軸解析歪掉
+      return lastN.map(d=>({ x: d.ym, volume: d['成交量'], price: d[priceKey] }));
+    }
+
+    function draw(){
+      if(chart){ chart.destroy(); }
+      if(!rows.length || !el.city.value || !el.dist.value){
+        el.title.textContent = '資料尚未載入完成';
+        el.download.disabled = true; return;
+      }
+      const data = currentSeries();
+      const dtypeText = el.dtype.value==='all' ? '中古屋+預售屋' : (el.dtype.value==='a' ? '中古屋' : '預售屋');
+      el.title.textContent = `${el.city.value}｜${el.dist.value}｜${dtypeText}｜近 ${el.range.value} 個月`;
+      el.download.disabled = data.length===0;
+
+      // 固定長條寬度，避免時間縮短時變太胖
+      const dsVolume = {
+        type:'bar',
+        label:'成交量(筆)',
+        yAxisID:'y',
+        data:data.map(d=>({x:d.x, y:d.volume})),
+        borderWidth:0,
+        barThickness: 12,
+        maxBarThickness: 14
+      };
+      // 修正折線歪斜：改直線、避免跨缺值、對齊中心
+      const dsPrice  = {
+        type:'line',
+        label:'均價(萬元/坪)',
+        yAxisID:'y1',
+        data:data.map(d=>({x:d.x, y:d.price})),
+        pointRadius:2,
+        tension:0,                       // 直線（0 = 無平滑）
+        cubicInterpolationMode:'monotone',
+        spanGaps:false                   // 缺值就斷開，不跨月份
+      };
+
+      chart = new Chart(el.canvas.getContext('2d'), {
+        type: 'bar',
+        data: { datasets: [dsVolume, dsPrice] },
+        options: {
+          maintainAspectRatio:false,
+          animation:false,               // 效能：關閉動畫
+          parsing:false,                 // 我們已給 {x,y}
+          normalized:true,               // 效能：加速數值域
+          interaction: { mode:'index', intersect:false },
+          plugins: {
+            legend:{ position:'top' },
+            tooltip:{ enabled:true },
+            zoom:{ pan:{ enabled:true, mode:'x' }, zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' } }
+          },
+          scales: {
+            x:{
+              type:'time',
+              offset:true,               // 置中每個月份，使線與條對齊
+              time:{ unit:'month', tooltipFormat:'yyyy-MM', displayFormats:{ month:'yyyy-MM' } }
+            },
+            y:{ position:'left', title:{ display:true, text:'成交量(筆)' } },
+            y1:{ position:'right', title:{ display:true, text:'均價(萬元/坪)' }, grid:{ drawOnChartArea:false } }
+          }
+        }
+      });
+    }
+
+    function loadFromUrl(){
+      setStatus('載入中…');
+      // 加上 cache-buster，降低 Google 快取影響
+      const url = CSV_URL + (CSV_URL.includes('?') ? '&' : '?') + 'cb=' + Date.now();
+      Papa.parse(url, {
+        header:true, download:true, skipEmptyLines:true,
+        worker:true, fastMode:true,       // 背景解析更順
+        complete: (res)=>{
+          const before = res.data?.length || 0;
+          rows = normalizeRows(res.data || []);
+          const after = rows.length;
+          if(!after){
+            setStatus('載入失敗（資料為空）', true);
+            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。請檢查權限/欄位/日期格式，或確認 gid 是否為資料分頁。`;
+            return;
+          }
+          setStatus('已載入');
+          const cities = uniq(rows.map(r=>r['縣市'])).slice(0,8).join('、');
+          el.meta.textContent = `共 ${after} 筆；範例縣市：${cities}${rows.length>8?'…':''}`;
+          populateCities();
+        },
+        error: (err)=>{ console.error(err); setStatus('載入失敗', true); alert('載入失敗：' + (err?.message || '未知錯誤')); }
+      });
+    }
+
+    // 事件
+    el.city.addEventListener('change', populateDistricts);
+    el.dist.addEventListener('change', draw);
+    el.dtype.addEventListener('change', draw);
+    el.range.addEventListener('change', draw);
+    el.median.addEventListener('change', draw);
+    el.download.addEventListener('click', ()=>{
+      const data = currentSeries();
+      const header = ['ym','volume','price'];
+      const csv = [header.join(',')].concat(
+        data.map(r => [fmtYM(r.x), r.volume ?? '', r.price ?? ''].join(','))
+      ).join('\n');
+      const blob = new Blob(["\uFEFF"+csv], {type:'text/csv;charset=utf-8;'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${el.city.value}_${el.dist.value}_${el.dtype.value}_${el.range.value}m.csv`;
+      a.click(); URL.revokeObjectURL(url);
+    });
+
+    // 初始化
+    loadFromUrl();
+  </script>
+</body>
+</html>
