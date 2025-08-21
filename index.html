@@ -91,7 +91,7 @@
   </main>
 
   <script>
-    // 固定資料來源（gviz CSV）
+    // === 固定資料來源（你的 gviz CSV） ===
     const CSV_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
 
     const el = {
@@ -119,8 +119,7 @@
       if(cell == null) return NaN;
       let s = String(cell).trim();
       if(!s) return NaN;
-      s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'');
-      s = s.replace(/-+/g,'-').replace(/^-|-$/g,'');
+      s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'');
       if(/^\d{5,6}$/.test(s)){ const y = parseInt(s.slice(0, s.length-2), 10), m = parseInt(s.slice(-2), 10);
         if(y <= 1911) return new Date(1911 + y, m-1, 1); // 民國年
         if(y >= 1900) return new Date(y, m-1, 1);        // 西元 YYYYMM
@@ -135,6 +134,22 @@
       return NaN;
     }
 
+    // ====== 一次性推斷實際欄位名（避免 BOM/空白/別名）======
+    function inferColumns(sample){
+      const keys = Object.keys(sample || {});
+      const clean = k => String(k||'').replace(/^\uFEFF/,'').trim();
+      const find = (targets)=> keys.find(k => targets.includes(clean(k)));
+      return {
+        CITY:  find(['縣市','城市','縣']) || '縣市',
+        DIST:  find(['鄉鎮市區','行政區','區']) || '鄉鎮市區',
+        KIND:  find(['資料別','類型','型態']) || '資料別',
+        YM:    find(['交易年月','年月','月別']) || '交易年月',
+        VOL:   find(['成交量','成交筆數','件數']) || '成交量',
+        AVG:   find(['均價_萬元每坪_平均','均價_萬元每坪_平均數','均價_每坪_平均','平均單價']) || '均價_萬元每坪_平均',
+        MED:   find(['均價_萬元每坪_中位數','均價_每坪_中位數']) || '均價_萬元每坪_中位數',
+      };
+    }
+
     // 數字轉換（去逗號、空字串→NaN）
     const toNum = (x) => {
       if (x === null || x === undefined) return NaN;
@@ -144,17 +159,23 @@
       return Number.isFinite(n) ? n : NaN;
     };
 
-    // 正規化資料（保留原中文欄位名）
-    function normalizeRows(data){
+    // 正規化資料（保持你的中文鍵名）
+    function normalizeRows(data, COL){
       return (data || []).map(r => {
-        const ym = parseYM(r['交易年月']);
+        const ym = parseYM(r[COL.YM]);
+        let kind = (r[COL.KIND] ?? '').toString().trim().toLowerCase(); // a/b
+        // 容錯：如果資料別寫成中文
+        if(kind && kind !== 'a' && kind !== 'b'){
+          if(/中古|一般/.test(kind)) kind = 'a';
+          else if(/預售/.test(kind)) kind = 'b';
+        }
         return {
-          '縣市': r['縣市'],
-          '鄉鎮市區': r['鄉鎮市區'],
-          '資料別': (r['資料別'] ?? '').toString().trim().toLowerCase(), // a / b
-          '成交量': toNum(r['成交量']) || 0,
-          '均價_萬元每坪_平均': toNum(r['均價_萬元每坪_平均']),
-          '均價_萬元每坪_中位數': toNum(r['均價_萬元每坪_中位數']),
+          '縣市': r[COL.CITY],
+          '鄉鎮市區': r[COL.DIST],
+          '資料別': kind,
+          '成交量': toNum(r[COL.VOL]) || 0,
+          '均價_萬元每坪_平均': toNum(r[COL.AVG]),
+          '均價_萬元每坪_中位數': toNum(r[COL.MED]),
           ym
         };
       }).filter(r => !isNaN(r.ym) && r['縣市'] && r['鄉鎮市區']);
@@ -180,7 +201,7 @@
       const months = Number(el.range.value || 24);
       const lastN = sorted.slice(-months);
       const priceKey = el.median.checked ? '均價_萬元每坪_中位數' : '均價_萬元每坪_平均';
-      return lastN.map(d=>({ x: d.ym, volume: d['成交量'], price: d[priceKey] }));
+      return lastN.map(d=>({ x: d.ym, volume: d['成交量'], price: Number.isFinite(d[priceKey]) ? d[priceKey] : null }));
     }
 
     function draw(){
@@ -209,7 +230,7 @@
         yAxisID:'y1',
         data:data.map(d=>({x:d.x, y:d.price})),
         pointRadius:2,
-        tension:0,                       // 直線避免甩尾
+        tension:0,                       // 直線
         cubicInterpolationMode:'monotone',
         spanGaps:false                   // 缺值不跨越
       };
@@ -241,17 +262,21 @@
       Papa.parse(url, {
         header:true, download:true, skipEmptyLines:true,
         worker:true, fastMode:true,
-        // ✅ 關鍵：去掉 BOM 與空白
+        // ✅ 關鍵：去掉表頭/儲存格的 BOM 與空白
         transformHeader: (h) => (h || '').replace(/^\uFEFF/, '').trim(),
         transform: (v) => (typeof v === 'string' ? v.trim() : v),
 
         complete: (res)=>{
           const before = res.data?.length || 0;
-          rows = normalizeRows(res.data || []);
+          const sample = res.data?.[0] || {};
+          const COL = inferColumns(sample);            // ← 推斷實際鍵名
+          rows = normalizeRows(res.data || [], COL);   // ← 套用推斷出的鍵名
           const after = rows.length;
+
           if(!after){
             setStatus('載入失敗（資料為空）', true);
-            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。請確認分頁的 gid 是否正確。`;
+            // 除錯訊息：把實際讀到的鍵名顯示出來，方便你比對
+            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。偵測到表頭鍵名：${Object.keys(sample).map(k=>k.replace(/\\uFEFF/g,'').trim()).join('｜')}`;
             return;
           }
           setStatus('已載入');
