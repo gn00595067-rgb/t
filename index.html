@@ -21,7 +21,7 @@
     .mt { margin-top: 8px; }
     .muted { color:var(--muted); font-size:12px; }
     .pill { display:inline-block; font-size:12px; padding:2px 8px; border:1px solid #e5e7eb; border-radius:999px; background:#fff; }
-    .pill.bad { border-color: var(--danger); color: var(--danger); }
+    .pill.bad { border-color: #ef4444; color: #ef4444; }
     canvas { width:100% !important; height: 380px !important; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
@@ -90,8 +90,8 @@
   </main>
 
   <script>
-    // 建議使用「發佈到網路 output=csv」連結作為主要來源；先保留 gviz 作為後備
-    const PUB_URL  = ""; // 例如：https://docs.google.com/spreadsheets/d/你的ID/pub?gid=0&single=true&output=csv
+    // 你可以把 PUB_URL 換成「發佈到網路 output=csv」的連結，GVIZ_URL 做後備
+    const PUB_URL  = ""; // https://docs.google.com/spreadsheets/d/<ID>/pub?gid=0&single=true&output=csv
     const GVIZ_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
 
     const el = {
@@ -114,14 +114,14 @@
     const setStatus = (text, bad=false)=>{ el.status.textContent = text; el.status.className = 'pill' + (bad?' bad':''); };
     const fmtYM = (d)=> `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 
-    // 去 BOM + 去首尾空白 + 去首尾引號
-    const dequote = (s)=> String(s ?? '')
+    // 小工具：去 BOM + trim + 去首尾引號（多一層保險）
+    const clean = (s)=> String(s ?? '')
       .replace(/^\uFEFF/, '')
       .trim()
       .replace(/^['"]+|['"]+$/g, '');
 
     function parseYM(cell){
-      let s = dequote(cell);
+      let s = clean(cell);
       if(!s) return NaN;
       s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'');
       if(/^\d{5,6}$/.test(s)){ const y = parseInt(s.slice(0, s.length-2), 10), m = parseInt(s.slice(-2), 10);
@@ -135,12 +135,10 @@
       const d = new Date(s); if(!isNaN(d)) return new Date(d.getFullYear(), d.getMonth(), 1);
       return NaN;
     }
-
-    const toNum = (x)=>{ const s=dequote(x); if(!s) return NaN; const n=Number(s.replace(/,/g,'')); return Number.isFinite(n)?n:NaN; };
+    const toNum = (x)=>{ const s=clean(x); if(!s) return NaN; const n=Number(s.replace(/,/g,'')); return Number.isFinite(n)?n:NaN; };
 
     function inferColumns(sample){
       const keys = Object.keys(sample || {});
-      const clean = k => dequote(k);
       const find  = targets => keys.find(k => targets.includes(clean(k)));
       return {
         CITY: find(['縣市','城市','縣']) || '縣市',
@@ -156,11 +154,11 @@
     function normalizeRows(data, COL){
       return (data||[]).map(r=>{
         const ym = parseYM(r[COL.YM]);
-        let kind = dequote(r[COL.KIND]).toLowerCase();
+        let kind = clean(r[COL.KIND]).toLowerCase();
         if(kind && kind!=='a' && kind!=='b'){ if(/中古|一般/.test(kind)) kind='a'; else if(/預售/.test(kind)) kind='b'; }
         return {
-          '縣市': dequote(r[COL.CITY]),
-          '鄉鎮市區': dequote(r[COL.DIST]),
+          '縣市': clean(r[COL.CITY]),
+          '鄉鎮市區': clean(r[COL.DIST]),
           '資料別': kind,
           '成交量': toNum(r[COL.VOL]) || 0,
           '均價_萬元每坪_平均': toNum(r[COL.AVG]),
@@ -252,10 +250,10 @@
     function loadFromText(text){
       Papa.parse(text, {
         header:true, skipEmptyLines:true,
-        worker:false, fastMode:true,
-        // ⬇️ 關鍵：表頭/內容同時去 BOM + 去空白 + 去首尾引號
-        transformHeader: (h)=> dequote(h),
-        transform: (v)=> dequote(v),
+        worker:false,        // 保留 transform，所以關掉 worker
+        fastMode:false,      // ←← 這一行是關鍵修正：不要用 fastMode
+        transformHeader: (h)=> clean(h),
+        transform: (v)=> clean(v),
         complete: (res)=>{
           const before = res.data?.length || 0;
           const sample = res.data?.[0] || {};
@@ -265,7 +263,7 @@
 
           if(!after){
             setStatus('載入失敗（資料為空）', true);
-            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。偵測到表頭鍵名：${Object.keys(sample).map(k=>dequote(k)).join('｜')}`;
+            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。偵測到表頭鍵名：${Object.keys(sample).map(k=>clean(k)).join('｜')}`;
             return;
           }
           setStatus('已載入');
@@ -307,7 +305,6 @@
       a.click(); URL.revokeObjectURL(url);
     });
 
-    // 初始化
     load();
   </script>
 </body>
