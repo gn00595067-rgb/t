@@ -97,7 +97,7 @@
     // ① 在這裡「寫死」你的 Google Sheet CSV 連結（請替換 gid 為資料所在分頁）
     // 建議格式（gviz CSV）：
     // https://docs.google.com/spreadsheets/d/【試算表ID】/gviz/tq?tqx=out:csv&gid=【分頁GID】
-    const CSV_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
+    const CSV_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/export?format=csv&gid=0";
 
     const el = {
       city: document.getElementById('city'),
@@ -195,7 +195,7 @@
         el.download.disabled = true; return;
       }
       const data = currentSeries();
-      const dtypeText = el.dtype.value==='all' ? '中古屋+預售屋' : (el\.dtype\.value==='a' ? '中古屋' : '預售屋');
+      const dtypeText = el.dtype.value==='all' ? '中古屋+預售屋' : (el.dtype.value==='a' ? '中古屋' : '預售屋');
 el.title.textContent = `${el.city.value}｜${el.dist.value}｜${dtypeText}｜近 ${el.range.value} 個月`;
       el.download.disabled = data.length===0;
 
@@ -206,6 +206,9 @@ el.title.textContent = `${el.city.value}｜${el.dist.value}｜${dtypeText}｜近
         type: 'bar', data: { datasets: [dsVolume, dsPrice] },
         options: {
           maintainAspectRatio:false,
+          animation:false,
+          parsing:false,
+          normalized:true,
           interaction: { mode:'index', intersect:false },
           plugins: { legend:{ position:'top' }, tooltip:{ enabled:true }, zoom:{ pan:{ enabled:true, mode:'x' }, zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' } } },
           scales: { x:{ type:'time', time:{ unit:'month', tooltipFormat:'yyyy-MM' } }, y:{ position:'left', title:{ display:true, text:'成交量(筆)' } }, y1:{ position:'right', title:{ display:true, text:'均價(萬元/坪)' }, grid:{ drawOnChartArea:false } } }
@@ -215,13 +218,14 @@ el.title.textContent = `${el.city.value}｜${el.dist.value}｜${dtypeText}｜近
 
     function loadFromUrl(){
       setStatus('載入中…');
-      Papa.parse(CSV_URL, { header:true, download:true, skipEmptyLines:true,
+      const __t0 = performance.now();
+      Papa.parse(CSV_URL, { header:true, download:true, skipEmptyLines:true, worker:true, fastMode:true,
         complete: (res)=>{
           const before = res.data?.length || 0;
           rows = normalizeRows(res.data || []);
           const after = rows.length;
           if(!after){ setStatus('載入失敗（資料為空）', true); el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。請檢查權限/欄位/日期格式。`; return; }
-          setStatus('已載入');
+          setStatus(`已載入（${Math.round(performance.now()-__t0)}ms）`);
           const cities = uniq(rows.map(r=>r['縣市'])).slice(0,8).join('、');
           el.meta.textContent = `共 ${after} 筆；範例縣市：${cities}${rows.length>8?'…':''}`;
           populateCities();
