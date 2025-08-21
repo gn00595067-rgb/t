@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>台灣各行政區｜價量趨勢（線上資料版）</title>
+  <style>
+    :root { --fg:#111; --muted:#6b7280; --card:#fff; --bg:#f7f7f8; --brand:#2563eb;}
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Noto Sans TC", Segoe UI, Roboto, Arial; color:var(--fg); background:var(--bg); }
+    header { position:sticky; top:0; backdrop-filter:saturate(120%) blur(6px); background:rgba(255,255,255,.85); border-bottom:1px solid #e5e7eb; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 18px; margin: 0; }
+    .grid { display:grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 12px; }
+    .col-span-2{ grid-column: span 2 / span 2; }
+    .col-span-3{ grid-column: span 3 / span 3; }
+    .col-span-6{ grid-column: 1 / -1; }
+    .card { background:var(--card); border:1px solid #e5e7eb; border-radius:14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .card .body { padding:16px; }
+    label { font-size:12px; color:var(--muted); display:block; }
+    select,input[type=file],input[type=text]{ width:100%; margin-top:6px; padding:8px; border-radius:10px; border:1px solid #e5e7eb; background:#fff; }
+    .btn { padding:8px 12px; border-radius:10px; border:1px solid #e5e7eb; background:#fff; cursor:pointer; }
+    .btn.primary{ background:var(--brand); color:#fff; border-color:var(--brand); }
+    .btn:disabled{ opacity:.6; cursor:not-allowed; }
+    .row { display:flex; align-items:center; gap:8px; flex-wrap: wrap; }
+    .right { display:flex; justify-content:flex-end; }
+    .mt { margin-top: 8px; }
+    .muted { color:var(--muted); font-size:12px; }
+    canvas { width:100% !important; height: 380px !important; }
+    .hint { font-size:12px; color:var(--muted); margin-top:6px; }
+    .pill { display:inline-block; font-size:12px; padding:2px 8px; border:1px solid #e5e7eb; border-radius:999px; background:#fff; }
+  </style>
+  <!-- CDN: PapaParse + Chart.js + Zoom plugin -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <div class="container row" style="gap:10px; align-items:center;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 8a10.9 10.9 0 0 1-3.14 1.53A4.48 4.48 0 0 0 12 12v1A10.66 10.66 0 0 1 3 5s-4 9 5 13a11.64 11.64 0 0 1-7 2c9 5 20 0 20-11.5a4.5 4.5 0 0 0-.08-.83Z"/></svg>
+      <h1>台灣各行政區｜價量趨勢（線上資料版）</h1>
+      <span id="status" class="pill">未載入</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="card mt">
+      <div class="body">
+        <div class="grid">
+          <div class="col-span-6">
+            <label>線上資料來源（Google Sheets 轉 CSV 或任意 CSV 連結）</label>
+            <div class="row">
+              <input id="csvUrl" type="text" placeholder="例如：https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv" />
+              <button id="loadUrl" class="btn primary">載入</button>
+              <button id="saveUrl" class="btn">儲存網址</button>
+            </div>
+            <div class="hint">提示：Google 試算表 → 檔案 ＞ 分享 ＞ 發佈到網路（或使用 gviz CSV 連結）。資料表需要含欄位：縣市、鄉鎮市區、資料別、交易年月、成交量、均價_萬元每坪_平均、均價_萬元每坪_中位數。</div>
+          </div>
+          <div class="col-span-2">
+            <label>或匯入本機 CSV（備用）</label>
+            <input id="file" type="file" accept=".csv" />
+          </div>
+          <div>
+            <label>縣市</label>
+            <select id="city"></select>
+          </div>
+          <div>
+            <label>行政區</label>
+            <select id="dist"></select>
+          </div>
+          <div>
+            <label>資料別</label>
+            <select id="dtype">
+              <option value="all">a+b（合併）</option>
+              <option value="a">a（一般買賣）</option>
+              <option value="b">b（預售屋）</option>
+            </select>
+          </div>
+          <div>
+            <label>時間範圍</label>
+            <select id="range">
+              <option value="3">近 3 個月</option>
+              <option value="6">近半年</option>
+              <option value="12">近一年</option>
+              <option value="24" selected>近兩年</option>
+            </select>
+          </div>
+          <div class="row mt" style="align-items:end;">
+            <input id="median" type="checkbox" />
+            <label for="median">以價格「中位數」顯示</label>
+          </div>
+        </div>
+        <div class="right mt"><button id="download" class="btn" disabled>下載目前檢視</button></div>
+        <div class="muted mt">提示：可用滑鼠拖曳放大（框選區間），雙擊圖表可還原。</div>
+      </div>
+    </div>
+
+    <div class="card mt">
+      <div class="body">
+        <div class="row" style="gap:6px; margin-bottom:6px;">
+          <strong id="title">請先載入線上資料或匯入 CSV</strong>
+        </div>
+        <canvas id="chart"></canvas>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const el = {
+      csvUrl: document.getElementById('csvUrl'),
+      loadUrl: document.getElementById('loadUrl'),
+      saveUrl: document.getElementById('saveUrl'),
+      file: document.getElementById('file'),
+      city: document.getElementById('city'),
+      dist: document.getElementById('dist'),
+      dtype: document.getElementById('dtype'),
+      range: document.getElementById('range'),
+      median: document.getElementById('median'),
+      title: document.getElementById('title'),
+      download: document.getElementById('download'),
+      canvas: document.getElementById('chart'),
+      status: document.getElementById('status'),
+    };
+
+    let rows = [];
+    let chart;
+
+    function uniq(arr){ return Array.from(new Set(arr.filter(Boolean))); }
+    function parseYM(s){ return new Date(String(s).trim()+"-01T00:00:00"); }
+    function fmtYM(d){ const y=d.getFullYear(); const m=(d.getMonth()+1).toString().padStart(2,'0'); return `${y}-${m}`; }
+
+    function setStatus(text){ el.status.textContent = text; }
+
+    function populateCities(){
+      const cs = uniq(rows.map(r=>r['縣市']));
+      el.city.innerHTML = cs.map(c=>`<option value="${c}">${c}</option>`).join('');
+      el.city.value = cs[0] || '';
+      populateDistricts();
+    }
+    function populateDistricts(){
+      const ds = uniq(rows.filter(r=>r['縣市']===el.city.value).map(r=>r['鄉鎮市區']));
+      el.dist.innerHTML = ds.map(d=>`<option value="${d}">${d}</option>`).join('');
+      el.dist.value = ds[0] || '';
+      draw();
+    }
+
+    function currentSeries(){
+      const base = rows.filter(r=> r['縣市']===el.city.value && r['鄉鎮市區']===el.dist.value);
+      const filtered = el.dtype.value==='all' ? base : base.filter(r=> String(r['資料別']).toLowerCase()===el.dtype.value);
+      const sorted = filtered.sort((a,b)=> a.ym - b.ym);
+      const months = Number(el.range.value || 24);
+      const lastN = sorted.slice(-months);
+      const usePrice = el.median.checked ? '均價_萬元每坪_中位數' : '均價_萬元每坪_平均';
+      return lastN.map(d=>({ ym: fmtYM(d.ym), volume: d['成交量'], price: d[usePrice] }));
+    }
+
+    function draw(){
+      if(chart){ chart.destroy(); }
+      if(!rows.length || !el.city.value || !el.dist.value){
+        el.title.textContent = '請先載入線上資料或匯入 CSV，並選擇縣市/行政區';
+        el.download.disabled = true;
+        return;
+      }
+      const data = currentSeries();
+      el.title.textContent = `${el.city.value}｜${el.dist.value}｜${el.dtype.value==='all'?'a+b':el.dtype.value}｜近 ${el.range.value} 個月`;
+      el.download.disabled = data.length===0;
+
+      const dsVolume = {
+        type: 'bar',                 // 長條（成交量）
+        label: '成交量(筆)',
+        yAxisID: 'y',
+        data: data.map(d=>({x:d.ym, y:d.volume})),
+        borderWidth: 0
+      };
+      const dsPrice = {
+        type: 'line',                // 折線（均價）
+        label: '均價(萬元/坪)',
+        yAxisID: 'y1',
+        data: data.map(d=>({x:d.ym, y:d.price})),
+        pointRadius: 2,
+        tension: 0.25
+      };
+
+      chart = new Chart(el.canvas.getContext('2d'), {
+        type: 'bar',
+        data: { datasets: [dsVolume, dsPrice] },
+        options: {
+          maintainAspectRatio:false,
+          interaction: { mode:'index', intersect:false },
+          plugins: {
+            legend: { position:'top' },
+            tooltip: { enabled:true },
+            zoom: {
+              limits: { x: { min: undefined, max: undefined } },
+              pan: { enabled: true, mode: 'x' },
+              zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' }
+            }
+          },
+          scales: {
+            x: { type:'time', time: { unit:'month', tooltipFormat:'yyyy-MM' } },
+            y: { position:'left', title:{ display:true, text:'成交量(筆)' }, grid:{ drawOnChartArea:true } },
+            y1:{ position:'right', title:{ display:true, text:'均價(萬元/坪)' }, grid:{ drawOnChartArea:false } }
+          }
+        }
+      });
+    }
+
+    function normalizeRows(data){
+      return data.map(r=>({
+        ...r,
+        成交量: Number(r['成交量']) || 0,
+        ['均價_萬元每坪_平均']: Number(r['均價_萬元每坪_平均']) || NaN,
+        ['均價_萬元每坪_中位數']: Number(r['均價_萬元每坪_中位數']) || NaN,
+        ym: parseYM(r['交易年月'])
+      })).filter(r=> !isNaN(r.ym));
+    }
+
+    function loadFromUrl(url){
+      setStatus('載入中…');
+      Papa.parse(url, {
+        header:true, download:true, skipEmptyLines:true,
+        complete: (res)=>{
+          rows = normalizeRows(res.data);
+          if(!rows.length){ setStatus('載入失敗（資料為空）'); return; }
+          setStatus('已載入');
+          populateCities();
+        },
+        error: (err)=>{
+          console.error(err);
+          setStatus('載入失敗');
+          alert('載入失敗：' + (err?.message || '未知錯誤'));
+        }
+      });
+    }
+
+    // events
+    el.city.addEventListener('change', populateDistricts);
+    el.dist.addEventListener('change', draw);
+    el.dtype.addEventListener('change', draw);
+    el.range.addEventListener('change', draw);
+    el.median.addEventListener('change', draw);
+
+    el.download.addEventListener('click', ()=>{
+      const data = currentSeries();
+      const header = ['ym','volume','price'];
+      const csv = [header.join(',')].concat(data.map(r=> header.map(h=>r[h]??'').join(','))).join('\n');
+      const blob = new Blob(["\uFEFF"+csv], {type:'text/csv;charset=utf-8;'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${el.city.value}_${el.dist.value}_${el.dtype.value}_${el.range.value}m.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    el.file.addEventListener('change', (e)=>{
+      const file = e.target.files?.[0]; if(!file) return;
+      setStatus('解析本機檔…');
+      Papa.parse(file, { header:true, skipEmptyLines:true, complete: (res)=>{
+        rows = normalizeRows(res.data);
+        setStatus('已載入（本機）');
+        populateCities();
+      }});
+    });
+
+    el.loadUrl.addEventListener('click', ()=>{
+      const url = (el.csvUrl.value || '').trim();
+      if(!url) return alert('請先輸入 CSV 連結');
+      loadFromUrl(url);
+    });
+    el.saveUrl.addEventListener('click', ()=>{
+      const url = (el.csvUrl.value || '').trim();
+      if(!url) return alert('沒有網址可儲存');
+      localStorage.setItem('csvUrl', url);
+      alert('已儲存網址，下次會自動帶入');
+    });
+
+    // init
+    (function init(){
+      const saved = localStorage.getItem('csvUrl');
+      if(saved){ el.csvUrl.value = saved; }
+    })();
+  </script>
+</body>
+</html>
