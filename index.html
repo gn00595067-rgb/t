@@ -91,8 +91,12 @@
   </main>
 
   <script>
-    // ✅ 固定使用 gviz CSV（若資料不在第一分頁，將 gid 改成對的）
-    const CSV_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
+    // ===== 資料來源（gviz CSV） =====
+    const SHEET_ID = "1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc";
+    const GID = "0"; // 若資料在別的分頁，改成正確 gid
+    const urlGViz = (cb)=>`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${GID}&cb=${cb}`;
+    // 後備（若你有把試算表「發佈到網路」）：pub CSV（可留著，不影響；未發佈時會 404）
+    const urlPub  = (cb)=>`https://docs.google.com/spreadsheets/d/${SHEET_ID}/pub?gid=${GID}&single=true&output=csv&cb=${cb}`;
 
     const el = {
       city: document.getElementById('city'),
@@ -110,71 +114,45 @@
     let rows = [];
     let chart;
 
-    function uniq(arr){ return Array.from(new Set(arr.filter(Boolean))); }
-    function setStatus(text, bad=false){ el.status.textContent = text; el.status.className = 'pill' + (bad?' bad':''); }
-    function fmtYM(d){ const y=d.getFullYear(); const m=(d.getMonth()+1).toString().padStart(2,'0'); return `${y}-${m}`; }
+    const uniq = (arr)=> Array.from(new Set(arr.filter(Boolean)));
+    const setStatus = (text, bad=false)=>{ el.status.textContent = text; el.status.className = 'pill' + (bad?' bad':''); };
+    const fmtYM = (d)=> `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 
-    // 解析多種「交易年月」：YYYY-MM / YYYY/MM / YYYYMM / YYYY-MM-DD / 民國年 11307、113-07
+    // 解析「交易年月」成 Date
     function parseYM(cell){
       if(cell == null) return NaN;
       let s = String(cell).trim();
       if(!s) return NaN;
-      s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'');
-      s = s.replace(/-+/g,'-').replace(/^-|-$/g,'');
-
-      // 純數字：YYYYMM 或 ROCYYMM（如 11307）
-      if(/^\d{5,6}$/.test(s)){
-        const y = parseInt(s.slice(0, s.length-2), 10);
-        const m = parseInt(s.slice(-2), 10);
-        if(y <= 1911){ // 民國年
-          const yy = 1911 + y;
-          return new Date(yy, m-1, 1);
-        } else if(y >= 1900){ // 西元 YYYYMM
-          return new Date(y, m-1, 1);
-        }
+      s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'');
+      if(/^\d{5,6}$/.test(s)){ const y = parseInt(s.slice(0, s.length-2), 10), m = parseInt(s.slice(-2), 10);
+        if(y <= 1911) return new Date(1911 + y, m-1, 1);
+        if(y >= 1900) return new Date(y, m-1, 1);
       }
-      // YYYY-MM(-DD)?
       const m1 = s.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
-      if(m1){
-        const y = parseInt(m1[1],10), mo=parseInt(m1[2],10);
-        if(y >= 1900 && mo>=1 && mo<=12) return new Date(y, mo-1, 1);
-      }
-      // 民國年 113-07
+      if(m1){ const y = +m1[1], mo = +m1[2]; if(y>=1900 && mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
       const m2 = s.match(/^(\d{2,3})-(\d{1,2})$/);
-      if(m2){
-        const y = 1911 + parseInt(m2[1],10);
-        const mo = parseInt(m2[2],10);
-        if(mo>=1 && mo<=12) return new Date(y, mo-1, 1);
-      }
-      // Fallback
-      const d = new Date(s);
-      if(!isNaN(d)) return new Date(d.getFullYear(), d.getMonth(), 1);
+      if(m2){ const y = 1911 + +m2[1], mo = +m2[2]; if(mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
+      const d = new Date(s); if(!isNaN(d)) return new Date(d.getFullYear(), d.getMonth(), 1);
       return NaN;
     }
 
-    // 表頭修整（去空白）
     function normalizeHeaders(obj){
-      const out={};
-      Object.keys(obj||{}).forEach(k=>{ const nk=String(k||'').trim(); out[nk]=obj[k]; });
-      return out;
+      const out={}; Object.keys(obj||{}).forEach(k=>{ out[String(k||'').trim()] = obj[k]; }); return out;
     }
-
-    // 欄位標準化與容錯
     function normalizeRows(data){
-      const norm = (data||[]).map(r=> normalizeHeaders(r)).map(r=>{
+      return (data||[]).map(r=> normalizeHeaders(r)).map(r=>{
         const ym = parseYM(r['交易年月']);
         return {
           ...r,
           '縣市': r['縣市'],
           '鄉鎮市區': r['鄉鎮市區'],
           '資料別': (r['資料別'] ?? '').toString().trim().toLowerCase(),
-          '成交量': Number(r['成交量']) || 0,
+          '成交量': Number(String(r['成交量']||'').replace(/,/g,'')) || 0,
           '均價_萬元每坪_平均': Number(r['均價_萬元每坪_平均']) || Number(r['均價_萬元每坪_平均數']) || Number(r['均價_每坪_平均']) || Number(r['平均單價']) || NaN,
           '均價_萬元每坪_中位數': Number(r['均價_萬元每坪_中位數']) || Number(r['均價_每坪_中位數']) || NaN,
-          ym // <- 這裡保留 Date 物件
+          ym
         };
       }).filter(r=> !isNaN(r.ym) && r['縣市'] && r['鄉鎮市區']);
-      return norm;
     }
 
     function populateCities(){
@@ -197,7 +175,6 @@
       const months = Number(el.range.value || 24);
       const lastN = sorted.slice(-months);
       const priceKey = el.median.checked ? '均價_萬元每坪_中位數' : '均價_萬元每坪_平均';
-      // ✅ 用 Date 當 X 值，避免時間軸解析失敗
       return lastN.map(d=>({ x: d.ym, volume: d['成交量'], price: d[priceKey] }));
     }
 
@@ -212,34 +189,24 @@
       el.title.textContent = `${el.city.value}｜${el.dist.value}｜${dtypeText}｜近 ${el.range.value} 個月`;
       el.download.disabled = data.length===0;
 
-      // 固定長條寬度，避免時間縮短時變太胖
       const dsVolume = {
-        type:'bar',
-        label:'成交量(筆)',
-        yAxisID:'y',
-        data:data.map(d=>({x:d.x, y:d.volume})),
-        borderWidth:0,
-        barThickness: 12,
-        maxBarThickness: 14
+        type:'bar', label:'成交量(筆)', yAxisID:'y',
+        data:data.map(d=>({x:d.x, y:d.volume})), borderWidth:0,
+        barThickness: 12, maxBarThickness: 14
       };
       const dsPrice  = {
-        type:'line',
-        label:'均價(萬元/坪)',
-        yAxisID:'y1',
-        data:data.map(d=>({x:d.x, y:d.price})),
-        pointRadius:2,
-        tension:0.25
+        type:'line', label:'均價(萬元/坪)', yAxisID:'y1',
+        data:data.map(d=>({x:d.x, y:d.price})), pointRadius:2, tension:0.25
       };
 
       chart = new Chart(el.canvas.getContext('2d'), {
         type: 'bar',
         data: { datasets: [dsVolume, dsPrice] },
         options: {
-          maintainAspectRatio:false,
+          maintainAspectRatio:false, animation:false, parsing:false, normalized:true,
           interaction: { mode:'index', intersect:false },
           plugins: {
-            legend:{ position:'top' },
-            tooltip:{ enabled:true },
+            legend:{ position:'top' }, tooltip:{ enabled:true },
             zoom:{ pan:{ enabled:true, mode:'x' }, zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' } }
           },
           scales: {
@@ -251,19 +218,40 @@
       });
     }
 
-    function loadFromUrl(){
+    // ====== 穩定載入（逾時＋後備） ======
+    function seemsHTML(text){ return /<html|<!doctype/i.test((text||'').slice(0,200)); }
+    function fetchWithTimeout(url, ms){
+      const c = new AbortController();
+      const t = setTimeout(()=>c.abort(), ms);
+      return fetch(url, {signal:c.signal, mode:'cors', credentials:'omit'})
+        .then(r=>r.text().then(text=>({ok:r.ok, status:r.status, text})))
+        .finally(()=> clearTimeout(t));
+    }
+
+    async function loadFromUrl(){
       setStatus('載入中…');
-      // 加上 cache-buster，降低 Google 快取影響
-      const url = CSV_URL + (CSV_URL.includes('?') ? '&' : '?') + 'cb=' + Date.now();
-      Papa.parse(url, {
-        header:true, download:true, skipEmptyLines:true,
+      const cb = Date.now();
+      const candidates = [urlGViz(cb), urlPub(cb)]; // 先 gviz，若你有發佈到網路則 pub 也可命中快取
+      let text = null;
+
+      for(const u of candidates){
+        try{
+          const r = await fetchWithTimeout(u, 8000); // 單次最多等 8 秒
+          if(r.ok && !seemsHTML(r.text)){ text = r.text; break; }
+        }catch(_){}
+      }
+
+      if(!text){ setStatus('載入失敗', true); el.meta.textContent = '無法連線或回傳非 CSV，請稍後再試或確認權限/gid。'; return; }
+
+      Papa.parse(text, {
+        header:true, skipEmptyLines:true, worker:true, fastMode:true,
         complete: (res)=>{
           const before = res.data?.length || 0;
           rows = normalizeRows(res.data || []);
           const after = rows.length;
           if(!after){
             setStatus('載入失敗（資料為空）', true);
-            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。請檢查權限/欄位/日期格式，或確認 gid 是否為資料分頁。`;
+            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。請檢查欄位與日期格式。`;
             return;
           }
           setStatus('已載入');
@@ -271,7 +259,7 @@
           el.meta.textContent = `共 ${after} 筆；範例縣市：${cities}${rows.length>8?'…':''}`;
           populateCities();
         },
-        error: (err)=>{ console.error(err); setStatus('載入失敗', true); alert('載入失敗：' + (err?.message || '未知錯誤')); }
+        error: (err)=>{ console.error(err); setStatus('載入失敗', true); el.meta.textContent = '解析錯誤：' + (err?.message || '未知'); }
       });
     }
 
