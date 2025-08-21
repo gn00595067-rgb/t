@@ -134,6 +134,15 @@
       return NaN;
     }
 
+    // 數字轉換（去逗號、空字串→NaN）
+    const toNum = (x) => {
+      if (x === null || x === undefined) return NaN;
+      const s = String(x).trim();
+      if (s === '') return NaN;
+      const n = Number(s.replace(/,/g, ''));
+      return Number.isFinite(n) ? n : NaN;
+    };
+
     // ====== 一次性推斷實際欄位名（避免 BOM/空白/別名）======
     function inferColumns(sample){
       const keys = Object.keys(sample || {});
@@ -150,22 +159,12 @@
       };
     }
 
-    // 數字轉換（去逗號、空字串→NaN）
-    const toNum = (x) => {
-      if (x === null || x === undefined) return NaN;
-      const s = String(x).trim();
-      if (s === '') return NaN;
-      const n = Number(s.replace(/,/g, ''));
-      return Number.isFinite(n) ? n : NaN;
-    };
-
     // 正規化資料（保持你的中文鍵名）
     function normalizeRows(data, COL){
       return (data || []).map(r => {
         const ym = parseYM(r[COL.YM]);
         let kind = (r[COL.KIND] ?? '').toString().trim().toLowerCase(); // a/b
-        // 容錯：如果資料別寫成中文
-        if(kind && kind !== 'a' && kind !== 'b'){
+        if(kind && kind !== 'a' && kind !== 'b'){         // 若資料別寫中文，自動歸一
           if(/中古|一般/.test(kind)) kind = 'a';
           else if(/預售/.test(kind)) kind = 'b';
         }
@@ -230,9 +229,9 @@
         yAxisID:'y1',
         data:data.map(d=>({x:d.x, y:d.price})),
         pointRadius:2,
-        tension:0,                       // 直線
+        tension:0,
         cubicInterpolationMode:'monotone',
-        spanGaps:false                   // 缺值不跨越
+        spanGaps:false
       };
 
       chart = new Chart(el.canvas.getContext('2d'), {
@@ -256,36 +255,74 @@
       });
     }
 
-    function loadFromUrl(){
+    // --------- 可靠抓取 CSV：fetch 文字 → Papa 解析 ----------
+    function fetchWithTimeout(url, ms){
+      const c = new AbortController(); const t = setTimeout(()=>c.abort(), ms);
+      return fetch(url, {signal:c.signal, mode:'cors', credentials:'omit', cache:'no-store'})
+        .then(async r => {
+          const text = await r.text();
+          return { ok: r.ok, status: r.status, text };
+        })
+        .finally(()=> clearTimeout(t));
+    }
+
+    async function loadFromUrl(){
       setStatus('載入中…');
-      const url = CSV_URL + (CSV_URL.includes('?') ? '&' : '?') + 'cb=' + Date.now(); // 防快取
-      Papa.parse(url, {
-        header:true, download:true, skipEmptyLines:true,
-        worker:true, fastMode:true,
-        // ✅ 關鍵：去掉表頭/儲存格的 BOM 與空白
-        transformHeader: (h) => (h || '').replace(/^\uFEFF/, '').trim(),
-        transform: (v) => (typeof v === 'string' ? v.trim() : v),
 
-        complete: (res)=>{
-          const before = res.data?.length || 0;
-          const sample = res.data?.[0] || {};
-          const COL = inferColumns(sample);            // ← 推斷實際鍵名
-          rows = normalizeRows(res.data || [], COL);   // ← 套用推斷出的鍵名
-          const after = rows.length;
+      // 看門狗：12 秒內沒結束就跳失敗，避免永遠卡「載入中」
+      let done = false;
+      const watchdog = setTimeout(()=>{
+        if(!done){ setStatus('載入失敗', true); el.meta.textContent = '逾時未完成：可能被 Google 轉到登入頁/被封鎖。稍後再試或檢查權限/網路。'; }
+      }, 12000);
 
-          if(!after){
-            setStatus('載入失敗（資料為空）', true);
-            // 除錯訊息：把實際讀到的鍵名顯示出來，方便你比對
-            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。偵測到表頭鍵名：${Object.keys(sample).map(k=>k.replace(/\\uFEFF/g,'').trim()).join('｜')}`;
-            return;
+      try{
+        const url1 = CSV_URL + (CSV_URL.includes('?') ? '&' : '?') + 'cb=' + Date.now();
+        let r = await fetchWithTimeout(url1, 8000);
+        if(!r.ok || /^</.test(r.text)){                  // 若回傳 HTML（登入錯誤頁等）
+          await new Promise(res=>setTimeout(res, 400));   // 短暫間隔後重試一次
+          const url2 = CSV_URL + '&cb=' + (Date.now()+1);
+          r = await fetchWithTimeout(url2, 8000);
+        }
+        if(!r.ok || /^</.test(r.text)){
+          setStatus('載入失敗', true);
+          el.meta.textContent = `HTTP: ${r.status || '未知'}；回傳內容看似 HTML，非 CSV。請確認試算表「任何知道連結者可檢視」、分頁 gid、或稍後再試。`;
+          done = true; clearTimeout(watchdog);
+          return;
+        }
+
+        Papa.parse(r.text, {
+          header:true, skipEmptyLines:true, worker:true, fastMode:true,
+          transformHeader: (h) => (h || '').replace(/^\uFEFF/, '').trim(),
+          transform: (v) => (typeof v === 'string' ? v.trim() : v),
+          complete: (res)=>{
+            const before = res.data?.length || 0;
+            const sample = res.data?.[0] || {};
+            const COL = inferColumns(sample);
+            rows = normalizeRows(res.data || [], COL);
+            const after = rows.length;
+
+            if(!after){
+              setStatus('載入失敗（資料為空）', true);
+              el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。偵測到表頭鍵名：${Object.keys(sample).map(k=>k.replace(/\\uFEFF/g,'').trim()).join('｜')}`;
+              done = true; clearTimeout(watchdog); return;
+            }
+            setStatus('已載入');
+            const cities = uniq(rows.map(r=>r['縣市'])).slice(0,8).join('、');
+            el.meta.textContent = `共 ${after} 筆；範例縣市：${cities}${rows.length>8?'…':''}`;
+            populateCities();
+            done = true; clearTimeout(watchdog);
+          },
+          error: (err)=>{
+            setStatus('載入失敗', true);
+            el.meta.textContent = '解析錯誤：' + (err?.message || '未知');
+            done = true; clearTimeout(watchdog);
           }
-          setStatus('已載入');
-          const cities = uniq(rows.map(r=>r['縣市'])).slice(0,8).join('、');
-          el.meta.textContent = `共 ${after} 筆；範例縣市：${cities}${rows.length>8?'…':''}`;
-          populateCities();
-        },
-        error: (err)=>{ console.error(err); setStatus('載入失敗', true); el.meta.textContent = '載入錯誤：' + (err?.message || '未知'); }
-      });
+        });
+      } catch(e){
+        setStatus('載入失敗', true);
+        el.meta.textContent = '連線錯誤：' + (e?.message || e);
+        done = true; clearTimeout(watchdog);
+      }
     }
 
     // 事件
