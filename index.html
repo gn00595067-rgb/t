@@ -94,7 +94,7 @@
   </main>
 
   <script>
-    // 建議把 PUB_URL 換成「發佈到網路 output=csv」的連結；沒有就靠 GVIZ_URL
+    // 建議把 PUB_URL 換成你「發佈到網路 output=csv」的連結；沒有就靠 GVIZ_URL
     const PUB_URL  = ""; // 例：https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/pub?gid=0&single=true&output=csv
     const GVIZ_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
 
@@ -125,16 +125,13 @@
       let s = clean(cell);
       if(!s) return NaN;
       s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'');
-      // 11307 / 202407
-      if(/^\d{5,6}$/.test(s)){
+      if(/^\d{5,6}$/.test(s)){ // 11307 / 202407
         const y = parseInt(s.slice(0, s.length-2), 10), m = parseInt(s.slice(-2), 10)-1;
         if(y <= 1911) return new Date(Date.UTC(1911 + y, m, 1));
         if(y >= 1900) return new Date(Date.UTC(y, m, 1));
       }
-      // YYYY-MM(-DD)?
       const m1 = s.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
       if(m1){ const y=+m1[1], mo=+m1[2]-1; if(y>=1900 && mo>=0 && mo<12) return new Date(Date.UTC(y, mo, 1)); }
-      // ROC
       const m2 = s.match(/^(\d{2,3})-(\d{1,2})$/);
       if(m2){ const y=1911+ +m2[1], mo=+m2[2]-1; if(mo>=0 && mo<12) return new Date(Date.UTC(y, mo, 1)); }
       const d = new Date(s); if(!isNaN(d)) return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
@@ -186,21 +183,22 @@
       draw();
     }
 
-    // 月彙整 → 使用「UTC 時戳」當 x
+    // 月彙整 → 回傳 UTC Date 當 x
     function aggregateSeries(baseRows, months, priceKey){
-      const map = new Map(); // key: ts(UTC ms) -> { ts, vol, prices[] }
+      const map = new Map(); // key: time(ms) -> { date, vol, prices[] }
       for(const r of baseRows){
-        const ts = Date.UTC(r.ym.getUTCFullYear(), r.ym.getUTCMonth(), 1);
-        if(!map.has(ts)) map.set(ts, { ts, vol:0, prices:[] });
-        const b = map.get(ts);
+        const date = new Date(Date.UTC(r.ym.getUTCFullYear(), r.ym.getUTCMonth(), 1));
+        const key = date.getTime();
+        if(!map.has(key)) map.set(key, { date, vol:0, prices:[] });
+        const b = map.get(key);
         b.vol += Number.isFinite(r['成交量']) ? r['成交量'] : 0;
         const p = r[priceKey];
         if(Number.isFinite(p)) b.prices.push(p);
       }
-      let arr = Array.from(map.values()).sort((a,b)=> a.ts - b.ts);
+      let arr = Array.from(map.values()).sort((a,b)=> a.date - b.date);
       if(months && arr.length > months) arr = arr.slice(-months);
       return arr.map(it=>({
-        x: it.ts,                                 // ← 用 UTC 時戳
+        x: it.date,                               // ← 直接用 Date 物件
         volume: +it.vol || 0,
         price: it.prices.length ? (it.prices.reduce((s,v)=>s+v,0)/it.prices.length) : null
       }));
@@ -230,36 +228,45 @@
         return;
       } else {
         el.nodata.style.display = 'none';
+        el.download.disabled = false;
       }
-      el.download.disabled = false;
 
       const dsVolume = {
         type:'bar',
         label:'成交量(筆)',
         yAxisID:'y',
+        parsing:{ xAxisKey:'x', yAxisKey:'y' },     // ← 明確告訴 Chart.js 用哪兩個鍵
         data:data.map(d=>({x:d.x, y:+d.volume})),
-        borderWidth:0,
+        backgroundColor:'rgba(59,130,246,.45)',
+        borderColor:'rgba(59,130,246,.9)',
+        borderWidth:1,
         barThickness:12, maxBarThickness:14
       };
       const dsPrice  = {
         type:'line',
         label:'均價(萬元/坪)',
         yAxisID:'y1',
+        parsing:{ xAxisKey:'x', yAxisKey:'y' },     // ← 同上
         data:data.map(d=>({x:d.x, y:(d.price==null?null:+d.price)})),
-        pointRadius:2, tension:0, cubicInterpolationMode:'monotone', spanGaps:false
+        borderColor:'#ef4444',
+        borderWidth:2,
+        pointRadius:2,
+        fill:false,
+        tension:0,
+        spanGaps:false
       };
 
       chart = new Chart(el.canvas.getContext('2d'), {
         type:'bar',
         data:{ datasets:[dsVolume, dsPrice] },
         options:{
-          maintainAspectRatio:false, animation:false, parsing:false, normalized:true,
+          maintainAspectRatio:false,
+          // ⚠️ 重要：不要全域 parsing:false（避免 time scale 忽略 x/y）
           interaction:{ mode:'index', intersect:false },
           plugins:{ legend:{position:'top'}, tooltip:{enabled:true},
             zoom:{ pan:{enabled:true,mode:'x'}, zoom:{wheel:{enabled:true},pinch:{enabled:true},mode:'x'} } },
           scales:{
-            x:{ type:'time',
-                time:{ unit:'month', tooltipFormat:'yyyy-MM', displayFormats:{month:'yyyy-MM'} } },
+            x:{ type:'time', time:{ unit:'month', tooltipFormat:'yyyy-MM', displayFormats:{month:'yyyy-MM'} } },
             y:{ position:'left', title:{display:true,text:'成交量(筆)'} },
             y1:{ position:'right', title:{display:true,text:'均價(萬元/坪)'}, grid:{drawOnChartArea:false} }
           }
@@ -267,7 +274,7 @@
       });
     }
 
-    // 可靠抓取（pub 優先、gviz 後備；逾時/重試/HTML 檢測）
+    // --------- 可靠抓取 CSV（pub 優先，gviz 後備；逾時/重試/HTML 檢測）---------
     const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
     function fetchWithTimeout(url, ms){
       const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms);
@@ -338,7 +345,7 @@
       const data = currentSeries();
       const header = ['ym','volume','price'];
       const csv = [header.join(',')].concat(
-        data.map(r => [fmtYM(new Date(r.x)), r.volume ?? '', r.price ?? ''].join(','))
+        data.map(r => [fmtYM(r.x), r.volume ?? '', r.price ?? ''].join(','))
       ).join('\n');
       const blob = new Blob(["\uFEFF"+csv], {type:'text/csv;charset=utf-8;'});
       const url = URL.createObjectURL(blob);
