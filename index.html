@@ -11,7 +11,6 @@
     header { position:sticky; top:0; backdrop-filter:saturate(120%) blur(6px); background:rgba(255,255,255,.85); border-bottom:1px solid #e5e7eb; }
     .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
     h1 { font-size: 18px; margin: 0; }
-    .grid { display:grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 12px; }
     .card { background:var(--card); border:1px solid #e5e7eb; border-radius:14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
     .card .body { padding:16px; }
     label { font-size:12px; color:var(--muted); display:block; }
@@ -19,12 +18,11 @@
     .btn { padding:8px 12px; border-radius:10px; border:1px solid #e5e7eb; background:#fff; cursor:pointer; }
     .btn:disabled{ opacity:.6; cursor:not-allowed; }
     .row { display:flex; align-items:center; gap:8px; flex-wrap: wrap; }
-    .right { display:flex; justify-content:flex-end; }
     .mt { margin-top: 8px; }
     .muted { color:var(--muted); font-size:12px; }
-    canvas { width:100% !important; height: 380px !important; }
     .pill { display:inline-block; font-size:12px; padding:2px 8px; border:1px solid #e5e7eb; border-radius:999px; background:#fff; }
     .pill.bad { border-color: var(--danger); color: var(--danger); }
+    canvas { width:100% !important; height: 380px !important; }
   </style>
   <!-- 依賴：PapaParse + Chart.js + 時間軸 + 縮放插件（CDN） -->
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
@@ -77,7 +75,6 @@
         <div class="row mt">
           <span id="meta" class="muted">尚未載入資料</span>
           <button id="download" class="btn" disabled>下載目前檢視</button>
-          <button id="reload" class="btn">重新載入</button>
         </div>
         <div class="muted mt">可用滑鼠拖曳放大（框選區間），雙擊圖表可還原。</div>
       </div>
@@ -94,7 +91,7 @@
   </main>
 
   <script>
-    // ✅ 寫死你的 Google Sheet CSV 連結（請確認 gid 指向放資料的分頁）
+    // ✅ 寫死你的 Google Sheet CSV 連結：如資料不在第一分頁，改 gid
     const CSV_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
 
     const el = {
@@ -105,7 +102,6 @@
       median: document.getElementById('median'),
       title: document.getElementById('title'),
       download: document.getElementById('download'),
-      reload: document.getElementById('reload'),
       canvas: document.getElementById('chart'),
       status: document.getElementById('status'),
       meta: document.getElementById('meta'),
@@ -123,7 +119,7 @@
       if(cell == null) return NaN;
       let s = String(cell).trim();
       if(!s) return NaN;
-      s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,''); // 全形標點也可一併處理
+      s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'');
       s = s.replace(/-+/g,'-').replace(/^-|-$/g,'');
 
       // 純數字：YYYYMM 或 ROCYYMM（如 11307）
@@ -277,7 +273,6 @@
       a.href = url; a.download = `${el.city.value}_${el.dist.value}_${el.dtype.value}_${el.range.value}m.csv`;
       a.click(); URL.revokeObjectURL(url);
     });
-    el.reload.addEventListener('click', loadFromUrl);
 
     // 初始化
     loadFromUrl();
