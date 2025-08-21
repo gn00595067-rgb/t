@@ -90,8 +90,8 @@
   </main>
 
   <script>
-    // 建議改用「發佈到網路」的 CSV 連結；這裡先保留 gviz 作為來源
-    const PUB_URL  = ""; // 若你有發佈到網路的 CSV，填在這（?output=csv）
+    // 建議使用「發佈到網路 output=csv」連結作為主要來源；先保留 gviz 作為後備
+    const PUB_URL  = ""; // 例如：https://docs.google.com/spreadsheets/d/你的ID/pub?gid=0&single=true&output=csv
     const GVIZ_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
 
     const el = {
@@ -114,9 +114,14 @@
     const setStatus = (text, bad=false)=>{ el.status.textContent = text; el.status.className = 'pill' + (bad?' bad':''); };
     const fmtYM = (d)=> `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 
+    // 去 BOM + 去首尾空白 + 去首尾引號
+    const dequote = (s)=> String(s ?? '')
+      .replace(/^\uFEFF/, '')
+      .trim()
+      .replace(/^['"]+|['"]+$/g, '');
+
     function parseYM(cell){
-      if(cell == null) return NaN;
-      let s = String(cell).trim();
+      let s = dequote(cell);
       if(!s) return NaN;
       s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'');
       if(/^\d{5,6}$/.test(s)){ const y = parseInt(s.slice(0, s.length-2), 10), m = parseInt(s.slice(-2), 10);
@@ -131,12 +136,12 @@
       return NaN;
     }
 
-    const toNum = (x)=>{ if(x==null) return NaN; const s=String(x).trim(); if(!s) return NaN; const n=Number(s.replace(/,/g,'')); return Number.isFinite(n)?n:NaN; };
+    const toNum = (x)=>{ const s=dequote(x); if(!s) return NaN; const n=Number(s.replace(/,/g,'')); return Number.isFinite(n)?n:NaN; };
 
     function inferColumns(sample){
       const keys = Object.keys(sample || {});
-      const clean = k => String(k||'').replace(/^\uFEFF/,'').trim();
-      const find  = t => keys.find(k => t.includes(clean(k)));
+      const clean = k => dequote(k);
+      const find  = targets => keys.find(k => targets.includes(clean(k)));
       return {
         CITY: find(['縣市','城市','縣']) || '縣市',
         DIST: find(['鄉鎮市區','行政區','區']) || '鄉鎮市區',
@@ -151,11 +156,11 @@
     function normalizeRows(data, COL){
       return (data||[]).map(r=>{
         const ym = parseYM(r[COL.YM]);
-        let kind = (r[COL.KIND] ?? '').toString().trim().toLowerCase();
+        let kind = dequote(r[COL.KIND]).toLowerCase();
         if(kind && kind!=='a' && kind!=='b'){ if(/中古|一般/.test(kind)) kind='a'; else if(/預售/.test(kind)) kind='b'; }
         return {
-          '縣市': r[COL.CITY],
-          '鄉鎮市區': r[COL.DIST],
+          '縣市': dequote(r[COL.CITY]),
+          '鄉鎮市區': dequote(r[COL.DIST]),
           '資料別': kind,
           '成交量': toNum(r[COL.VOL]) || 0,
           '均價_萬元每坪_平均': toNum(r[COL.AVG]),
@@ -247,9 +252,10 @@
     function loadFromText(text){
       Papa.parse(text, {
         header:true, skipEmptyLines:true,
-        worker:false, fastMode:true,     // ⬅⬅ 這裡改為 false
-        transformHeader: (h)=>(h||'').replace(/^\uFEFF/,'').trim(),
-        transform: (v)=> (typeof v === 'string' ? v.trim() : v),
+        worker:false, fastMode:true,
+        // ⬇️ 關鍵：表頭/內容同時去 BOM + 去空白 + 去首尾引號
+        transformHeader: (h)=> dequote(h),
+        transform: (v)=> dequote(v),
         complete: (res)=>{
           const before = res.data?.length || 0;
           const sample = res.data?.[0] || {};
@@ -259,7 +265,7 @@
 
           if(!after){
             setStatus('載入失敗（資料為空）', true);
-            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。偵測到表頭鍵名：${Object.keys(sample).map(k=>k.replace(/\\uFEFF/g,'').trim()).join('｜')}`;
+            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。偵測到表頭鍵名：${Object.keys(sample).map(k=>dequote(k)).join('｜')}`;
             return;
           }
           setStatus('已載入');
@@ -301,6 +307,7 @@
       a.click(); URL.revokeObjectURL(url);
     });
 
+    // 初始化
     load();
   </script>
 </body>
