@@ -4,8 +4,6 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>台灣各行政區｜價量趨勢</title>
-  <link rel="preconnect" href="https://docs.google.com" />
-  <link rel="preconnect" href="https://ssl.gstatic.com" />
   <style>
     :root { --fg:#111; --muted:#6b7280; --card:#fff; --bg:#f7f7f8; --danger:#ef4444; }
     * { box-sizing: border-box; }
@@ -93,12 +91,10 @@
   </main>
 
   <script>
-    // ====== 資料來源（請把 GID 改成你的分頁）======
+    // ===== 固定資料來源（gviz CSV） =====
     const SHEET_ID = "1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc";
-    const GID      = "0";
-    const gvizUrl  = (cb)=>`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${GID}&cb=${cb}`;
-    const pubUrl   = (cb)=>`https://docs.google.com/spreadsheets/d/${SHEET_ID}/pub?gid=${GID}&single=true&output=csv&cb=${cb}`; // 需「發佈到網路」
-    // =================================================
+    const GID = "0";
+    const CSV_URL = (cb)=>`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${GID}&cb=${cb}`;
 
     const el = {
       city: document.getElementById('city'),
@@ -120,15 +116,41 @@
     const setStatus = (text, bad=false)=>{ el.status.textContent = text; el.status.className = 'pill' + (bad?' bad':''); };
     const fmtYM = (d)=> `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 
-    // 解析「交易年月」成 Date
+    // ------- 強韌鍵名/取值（解決 BOM/空白/別名） -------
+    const CLEAN = s => String(s ?? '').replace(/^\uFEFF/, '').trim();
+    const KEYMAP = {
+      city: ['縣市','城市','縣'],
+      dist: ['鄉鎮市區','行政區','區'],
+      kind: ['資料別','類型','型態'],
+      ym:   ['交易年月','年月','月別'],
+      vol:  ['成交量','成交筆數','件數'],
+      avg:  ['均價_萬元每坪_平均','均價_每坪_平均','平均單價','平均單價(萬元/坪)'],
+      med:  ['均價_萬元每坪_中位數','均價_每坪_中位數','中位單價(萬元/坪)']
+    };
+    function normalizeHeaders(obj){
+      const out={};
+      Object.keys(obj||{}).forEach(k=>{
+        const nk = CLEAN(k);
+        out[nk] = obj[k];
+      });
+      return out;
+    }
+    function pick(obj, names){
+      // 先直接找
+      for(const n of names){ if(obj[n] !== undefined && obj[n] !== '') return obj[n]; }
+      // 其次嘗試移除 BOM 後比對
+      for(const k of Object.keys(obj)){ const ck = CLEAN(k); if(names.includes(ck) && obj[k] !== '') return obj[k]; }
+      return undefined;
+    }
+
+    // ------- 日期解析（多格式＋民國年） -------
     function parseYM(cell){
       if(cell == null) return NaN;
-      let s = String(cell).trim();
+      let s = CLEAN(cell).replace(/[年月\/\.]/g, '-').replace(/[日]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'');
       if(!s) return NaN;
-      s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'');
       if(/^\d{5,6}$/.test(s)){ const y = parseInt(s.slice(0, s.length-2), 10), m = parseInt(s.slice(-2), 10);
-        if(y <= 1911) return new Date(1911 + y, m-1, 1);  // ROC
-        if(y >= 1900) return new Date(y, m-1, 1);         // YYYYMM
+        if(y <= 1911) return new Date(1911 + y, m-1, 1);
+        if(y >= 1900) return new Date(y, m-1, 1);
       }
       const m1 = s.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
       if(m1){ const y=+m1[1], mo=+m1[2]; if(y>=1900 && mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
@@ -138,98 +160,97 @@
       return NaN;
     }
 
-    // 欄位標準化
-    const normalizeHeaders = (obj)=> {
-      const out={}; for(const k in obj){ out[String(k||'').trim()] = obj[k]; } return out;
-    };
+    // ------- 欄位標準化 -------
     function normalizeRows(data){
       return (data||[]).map(r=> normalizeHeaders(r)).map(r=>{
-        const ym = parseYM(r['交易年月']);
-        return {
-          ...r,
-          '縣市': r['縣市'],
-          '鄉鎮市區': r['鄉鎮市區'],
-          '資料別': (r['資料別'] ?? '').toString().trim().toLowerCase(),
-          '成交量': Number(String(r['成交量']||'').replace(/,/g,'')) || 0,
-          '均價_萬元每坪_平均': Number(r['均價_萬元每坪_平均']) || Number(r['均價_萬元每坪_平均數']) || Number(r['均價_每坪_平均']) || Number(r['平均單價']) || NaN,
-          '均價_萬元每坪_中位數': Number(r['均價_萬元每坪_中位數']) || Number(r['均價_每坪_中位數']) || NaN,
-          ym
-        };
-      }).filter(r=> !isNaN(r.ym) && r['縣市'] && r['鄉鎮市區']);
+        const city = CLEAN(pick(r, KEYMAP.city));
+        const dist = CLEAN(pick(r, KEYMAP.dist));
+        let kind = CLEAN(pick(r, KEYMAP.kind)).toLowerCase();
+        // 容錯：把中文別名轉成 a/b
+        if(kind.includes('中古') || kind.includes('一般')) kind = 'a';
+        else if(kind.includes('預售')) kind = 'b';
+        const ym = parseYM(pick(r, KEYMAP.ym));
+        const vol = Number(String(pick(r, KEYMAP.vol) ?? '').replace(/,/g,'')) || 0;
+        const avg = Number(pick(r, KEYMAP.avg));
+        const med = Number(pick(r, KEYMAP.med));
+
+        return { city, dist, kind, ym, volume: vol,
+                 price_avg: isFinite(avg) ? avg : NaN,
+                 price_med: isFinite(med) ? med : NaN };
+      }).filter(r=> !isNaN(r.ym) && r.city && r.dist);
     }
 
-    // 下拉
+    // ------- 下拉選單 -------
     function populateCities(){
-      const cs = uniq(rows.map(r=>r['縣市']));
+      const cs = uniq(rows.map(r=>r.city));
       el.city.innerHTML = cs.map(c=>`<option value="${c}">${c}</option>`).join('');
-      if(!el.city.value) el.city.value = cs[0] || '';
+      el.city.value = cs[0] || '';
       populateDistricts();
     }
     function populateDistricts(){
-      const ds = uniq(rows.filter(r=>r['縣市']===el.city.value).map(r=>r['鄉鎮市區']));
+      const ds = uniq(rows.filter(r=>r.city===el.city.value).map(r=>r.dist));
       el.dist.innerHTML = ds.map(d=>`<option value="${d}">${d}</option>`).join('');
-      if(!el.dist.value) el.dist.value = ds[0] || '';
+      el.dist.value = ds[0] || '';
       draw();
     }
 
-    // 準備序列
+    // ------- 資料切片 -------
     function currentSeries(){
-      const base = rows.filter(r=> r['縣市']===el.city.value && r['鄉鎮市區']===el.dist.value);
-      const filtered = el.dtype.value==='all' ? base : base.filter(r=> r['資料別']===el.dtype.value);
+      const base = rows.filter(r=> r.city===el.city.value && r.dist===el.dist.value);
+      const filtered = el.dtype.value==='all' ? base : base.filter(r=> r.kind===el.dtype.value);
       const sorted = filtered.sort((a,b)=> a.ym - b.ym);
       const months = Number(el.range.value || 24);
       const lastN = sorted.slice(-months);
-      const priceKey = el.median.checked ? '均價_萬元每坪_中位數' : '均價_萬元每坪_平均';
-      return lastN.map(d=>({ x:d.ym, volume:d['成交量'], price:isFinite(d[priceKey])? d[priceKey] : null }));
+      const priceKey = el.median.checked ? 'price_med' : 'price_avg';
+      return lastN.map(d=>({ x:d.ym, volume:d.volume, price: isFinite(d[priceKey]) ? d[priceKey] : null }));
     }
 
-    // 圖表（建立一次、之後只更新）
-    function ensureChart(){
-      if(chart) return;
-      const ctx = el.canvas.getContext('2d');
-      chart = new Chart(ctx, {
-        type:'bar',
-        data:{ datasets:[
-          {
-            type:'bar', label:'成交量(筆)', yAxisID:'y',
-            data:[], borderWidth:0, barThickness:12, maxBarThickness:14
-          },
-          {
-            type:'line', label:'均價(萬元/坪)', yAxisID:'y1',
-            data:[], pointRadius:2, tension:0, cubicInterpolationMode:'monotone', spanGaps:false
-          }
-        ]},
-        options:{
-          maintainAspectRatio:false,
-          animation:false, parsing:false, normalized:true,
-          interaction:{ mode:'index', intersect:false },
-          plugins:{
-            legend:{ position:'top' },
-            tooltip:{ enabled:true },
-            zoom:{ pan:{ enabled:true, mode:'x' }, zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' } }
-          },
-          scales:{
-            x:{ type:'time', offset:true, time:{ unit:'month', tooltipFormat:'yyyy-MM', displayFormats:{ month:'yyyy-MM' } } },
-            y:{ position:'left', title:{ display:true, text:'成交量(筆)' } },
-            y1:{ position:'right', title:{ display:true, text:'均價(萬元/坪)' }, grid:{ drawOnChartArea:false } }
-          }
-        }
-      });
-    }
+    // ------- 圖表 -------
     function draw(){
-      if(!rows.length) return;
-      ensureChart();
+      if(!rows.length){ return; }
       const data = currentSeries();
       const dtypeText = el.dtype.value==='all' ? '中古屋+預售屋' : (el.dtype.value==='a' ? '中古屋' : '預售屋');
       el.title.textContent = `${el.city.value}｜${el.dist.value}｜${dtypeText}｜近 ${el.range.value} 個月`;
       el.download.disabled = data.length===0;
 
-      chart.data.datasets[0].data = data.map(d=>({x:d.x, y:d.volume}));
-      chart.data.datasets[1].data = data.map(d=>({x:d.x, y:d.price}));
-      chart.update('none');
+      const dsVolume = {
+        type:'bar', label:'成交量(筆)', yAxisID:'y',
+        data:data.map(d=>({x:d.x, y:d.volume})),
+        borderWidth:0, barThickness:12, maxBarThickness:14
+      };
+      const dsPrice  = {
+        type:'line', label:'均價(萬元/坪)', yAxisID:'y1',
+        data:data.map(d=>({x:d.x, y:d.price})),
+        pointRadius:2, tension:0, cubicInterpolationMode:'monotone', spanGaps:false
+      };
+
+      if(!chart){
+        chart = new Chart(el.canvas.getContext('2d'), {
+          type: 'bar',
+          data: { datasets: [dsVolume, dsPrice] },
+          options: {
+            maintainAspectRatio:false, animation:false, parsing:false, normalized:true,
+            interaction:{ mode:'index', intersect:false },
+            plugins:{
+              legend:{ position:'top' },
+              tooltip:{ enabled:true },
+              zoom:{ pan:{ enabled:true, mode:'x' }, zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' } }
+            },
+            scales:{
+              x:{ type:'time', offset:true, time:{ unit:'month', tooltipFormat:'yyyy-MM', displayFormats:{ month:'yyyy-MM' } } },
+              y:{ position:'left', title:{ display:true, text:'成交量(筆)' } },
+              y1:{ position:'right', title:{ display:true, text:'均價(萬元/坪)' }, grid:{ drawOnChartArea:false } }
+            }
+          }
+        });
+      } else {
+        chart.data.datasets[0].data = dsVolume.data;
+        chart.data.datasets[1].data = dsPrice.data;
+        chart.update('none');
+      }
     }
 
-    // 下載目前視圖
+    // ------- 下載目前檢視 -------
     el.download.addEventListener('click', ()=>{
       const data = currentSeries();
       const header = ['ym','volume','price'];
@@ -243,58 +264,61 @@
       a.click(); URL.revokeObjectURL(url);
     });
 
-    // 事件（加一點點防抖，避免連續觸發）
-    const debounce = (fn, ms=60)=>{ let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), ms); } };
+    // ------- 事件 -------
+    const debounce = (fn, ms=60)=>{ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); } };
     el.city.addEventListener('change', ()=>debounce(populateDistricts)());
     el.dist.addEventListener('change', ()=>debounce(draw)());
     el.dtype.addEventListener('change', ()=>debounce(draw)());
     el.range.addEventListener('change', ()=>debounce(draw)());
     el.median.addEventListener('change', ()=>debounce(draw)());
 
-    // ====== 快速且穩定的抓取流程（並行、逾時、去快取） ======
-    const seemsHTML = (text)=> /<html|<!doctype/i.test((text||'').slice(0,200));
+    // ------- 下載 CSV（逾時 + 1 次重試） -------
     function fetchWithTimeout(url, ms){
-      const c = new AbortController();
-      const t = setTimeout(()=>c.abort(), ms);
+      const c = new AbortController(); const t = setTimeout(()=>c.abort(), ms);
       return fetch(url, {signal:c.signal, mode:'cors', credentials:'omit', cache:'no-store'})
-        .then(r => r.text().then(text => ({ ok:r.ok, status:r.status, text })))
+        .then(r=> r.text().then(text=>({ok:r.ok, status:r.status, text})))
         .finally(()=> clearTimeout(t));
     }
-    async function fetchCSVText(){
-      const cb = Date.now();
-      const p1 = fetchWithTimeout(gvizUrl(cb), 8000).then(r=> (r.ok && !seemsHTML(r.text)) ? r.text : Promise.reject());
-      const p2 = fetchWithTimeout(pubUrl(cb), 8000).then(r=> (r.ok && !seemsHTML(r.text)) ? r.text : Promise.reject());
-      // 誰先成功拿到 CSV 就用誰；若你沒「發佈到網路」，p2 會自動忽略
-      try { return await Promise.any([p1, p2]); }
-      catch { return await p1; } // 至少回退到 gviz 的結果/錯誤
-    }
 
-    async function load(){
+    async function loadFromUrl(){
       setStatus('載入中…');
+      const url = CSV_URL(Date.now());
+      let text = null;
       try{
-        const text = await fetchCSVText();
-        Papa.parse(text, {
-          header:true, skipEmptyLines:true, worker:true, fastMode:true,
-          complete: (res)=>{
-            const before = res.data?.length || 0;
-            rows = normalizeRows(res.data || []);
-            const after = rows.length;
-            if(!after){ setStatus('載入失敗（資料為空）', true); el.meta.textContent = `原始：${before}｜解析：${after}`; return; }
-            setStatus('已載入');
-            const cities = uniq(rows.map(r=>r['縣市'])).slice(0,8).join('、');
-            el.meta.textContent = `共 ${after} 筆；範例縣市：${cities}${rows.length>8?'…':''}`;
-            populateCities();
-          },
-          error: (err)=>{ setStatus('載入失敗', true); el.meta.textContent = '解析錯誤：' + (err?.message || '未知'); }
-        });
-      }catch(e){
-        setStatus('載入失敗', true);
-        el.meta.textContent = '連線逾時或權限問題，稍後再試或檢查是否已「發佈到網路」。';
-      }
+        let r = await fetchWithTimeout(url, 8000);
+        if(r.ok && !/^<\!doctype|<html/i.test(r.text)) text = r.text;
+        // 一次短重試（避免偶發 429/網路抖動）
+        if(!text){
+          await new Promise(res=>setTimeout(res, 400));
+          r = await fetchWithTimeout(CSV_URL(Date.now()+1), 8000);
+          if(r.ok && !/^<\!doctype|<html/i.test(r.text)) text = r.text;
+        }
+      }catch(e){ /* 忽略，交由下方失敗處理 */ }
+
+      if(!text){ setStatus('載入失敗', true); el.meta.textContent = '無法連線或回傳非 CSV，請稍後再試或確認權限/gid。'; return; }
+
+      Papa.parse(text, {
+        header:true, skipEmptyLines:true, worker:true, fastMode:true,
+        complete: (res)=>{
+          const before = res.data?.length || 0;
+          rows = normalizeRows(res.data || []);
+          const after = rows.length;
+          if(!after){
+            setStatus('載入失敗（資料為空）', true);
+            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。可能是表頭含隱藏字元或日期格式不符（已加入 BOM/別名容錯），再試刷新或確認 gid。`;
+            return;
+          }
+          setStatus('已載入');
+          const cities = uniq(rows.map(r=>r.city)).slice(0,8).join('、');
+          el.meta.textContent = `共 ${after} 筆；範例縣市：${cities}${rows.length>8?'…':''}`;
+          populateCities();
+        },
+        error: (err)=>{ setStatus('載入失敗', true); el.meta.textContent = '解析錯誤：' + (err?.message || '未知'); }
+      });
     }
 
     // 初始化
-    load();
+    loadFromUrl();
   </script>
 </body>
 </html>
