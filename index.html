@@ -90,9 +90,8 @@
   </main>
 
   <script>
-    // 1) 換成你「發佈到網路」後的 CSV 連結（pub）
-    const PUB_URL  = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/pub?gid=0&single=true&output=csv";
-    // 2) 保留 gviz 作為後備
+    // 建議改用「發佈到網路」的 CSV 連結；這裡先保留 gviz 作為來源
+    const PUB_URL  = ""; // 若你有發佈到網路的 CSV，填在這（?output=csv）
     const GVIZ_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
 
     const el = {
@@ -222,7 +221,7 @@
       });
     }
 
-    // ---- 可靠抓取：先 pub，再 gviz；含逾時/重試/HTML 檢測 ----
+    // 可靠抓取：先 pub，再 gviz；含逾時/重試/HTML 檢測
     const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
     function fetchWithTimeout(url, ms){
       const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms);
@@ -231,16 +230,13 @@
         .finally(()=> clearTimeout(t));
     }
     async function fetchCsvText(){
-      const srcs = [
-        PUB_URL,
-        GVIZ_URL
-      ].filter(Boolean);
-      for(let i=0;i<srcs.length;i++){
-        const u = srcs[i] + (srcs[i].includes('?') ? '&' : '?') + 'cb=' + Date.now();
+      const srcs = [PUB_URL, GVIZ_URL].filter(Boolean);
+      for(const base of srcs){
+        const u = base + (base.includes('?') ? '&' : '?') + 'cb=' + Date.now();
         for(let attempt=1; attempt<=2; attempt++){
           try{
             const r = await fetchWithTimeout(u, 9000);
-            if(r.ok && !/^</.test(r.text)) return { text:r.text, source: u.includes('/pub?') ? 'pub' : 'gviz' };
+            if(r.ok && !/^</.test(r.text)) return r.text;
           }catch(e){}
           await sleep(300 + 300*attempt);
         }
@@ -250,7 +246,8 @@
 
     function loadFromText(text){
       Papa.parse(text, {
-        header:true, skipEmptyLines:true, worker:true, fastMode:true,
+        header:true, skipEmptyLines:true,
+        worker:false, fastMode:true,     // ⬅⬅ 這裡改為 false
         transformHeader: (h)=>(h||'').replace(/^\uFEFF/,'').trim(),
         transform: (v)=> (typeof v === 'string' ? v.trim() : v),
         complete: (res)=>{
@@ -277,8 +274,8 @@
     async function load(){
       setStatus('載入中…');
       try{
-        const r = await fetchCsvText(); // 先 pub 後 gviz
-        loadFromText(r.text);
+        const text = await fetchCsvText();
+        loadFromText(text);
       }catch(e){
         setStatus('載入失敗', true);
         el.meta.textContent = String(e.message || e);
@@ -304,7 +301,6 @@
       a.click(); URL.revokeObjectURL(url);
     });
 
-    // 初始化
     load();
   </script>
 </body>
