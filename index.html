@@ -94,7 +94,7 @@
   </main>
 
   <script>
-    // 建議把 PUB_URL 換成你「發佈到網路 output=csv」的連結
+    // 建議把 PUB_URL 換成「發佈到網路 output=csv」的連結；沒有就靠 GVIZ_URL
     const PUB_URL  = ""; // 例：https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/pub?gid=0&single=true&output=csv
     const GVIZ_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
 
@@ -117,22 +117,27 @@
 
     const uniq = (arr)=> Array.from(new Set(arr.filter(Boolean)));
     const setStatus = (text, bad=false)=>{ el.status.textContent = text; el.status.className = 'pill' + (bad?' bad':''); };
-    const fmtYM = (d)=> `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    const fmtYM = (d)=> `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
     const clean = (s)=> String(s ?? '').replace(/^\uFEFF/,'').trim().replace(/^['"]+|['"]+$/g, '');
 
+    // 解析年月 → UTC 月初（避免時區位移）
     function parseYM(cell){
       let s = clean(cell);
       if(!s) return NaN;
       s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'');
-      if(/^\d{5,6}$/.test(s)){ const y = parseInt(s.slice(0, s.length-2), 10), m = parseInt(s.slice(-2), 10);
-        if(y <= 1911) return new Date(1911 + y, m-1, 1);
-        if(y >= 1900) return new Date(y, m-1, 1);
+      // 11307 / 202407
+      if(/^\d{5,6}$/.test(s)){
+        const y = parseInt(s.slice(0, s.length-2), 10), m = parseInt(s.slice(-2), 10)-1;
+        if(y <= 1911) return new Date(Date.UTC(1911 + y, m, 1));
+        if(y >= 1900) return new Date(Date.UTC(y, m, 1));
       }
+      // YYYY-MM(-DD)?
       const m1 = s.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
-      if(m1){ const y=parseInt(m1[1],10), mo=parseInt(m1[2],10); if(y>=1900 && mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
+      if(m1){ const y=+m1[1], mo=+m1[2]-1; if(y>=1900 && mo>=0 && mo<12) return new Date(Date.UTC(y, mo, 1)); }
+      // ROC
       const m2 = s.match(/^(\d{2,3})-(\d{1,2})$/);
-      if(m2){ const y=1911+parseInt(m2[1],10), mo=parseInt(m2[2],10); if(mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
-      const d = new Date(s); if(!isNaN(d)) return new Date(d.getFullYear(), d.getMonth(), 1);
+      if(m2){ const y=1911+ +m2[1], mo=+m2[2]-1; if(mo>=0 && mo<12) return new Date(Date.UTC(y, mo, 1)); }
+      const d = new Date(s); if(!isNaN(d)) return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
       return NaN;
     }
     const toNum = (x)=>{ const s=clean(x); if(!s) return NaN; const n=Number(s.replace(/,/g,'')); return Number.isFinite(n)?n:NaN; };
@@ -181,26 +186,22 @@
       draw();
     }
 
-    // --- 月彙整（關鍵）：把同月多筆合成一筆 ---
+    // 月彙整 → 使用「UTC 時戳」當 x
     function aggregateSeries(baseRows, months, priceKey){
-      // 依月份做 Map
-      const map = new Map(); // key: 'YYYY-MM' -> { date, volumeSum, prices[] }
+      const map = new Map(); // key: ts(UTC ms) -> { ts, vol, prices[] }
       for(const r of baseRows){
-        const key = fmtYM(r.ym);
-        if(!map.has(key)) map.set(key, { date: new Date(r.ym.getFullYear(), r.ym.getMonth(), 1), vol:0, prices:[] });
-        const b = map.get(key);
-        b.vol += (Number.isFinite(r['成交量']) ? r['成交量'] : 0);
+        const ts = Date.UTC(r.ym.getUTCFullYear(), r.ym.getUTCMonth(), 1);
+        if(!map.has(ts)) map.set(ts, { ts, vol:0, prices:[] });
+        const b = map.get(ts);
+        b.vol += Number.isFinite(r['成交量']) ? r['成交量'] : 0;
         const p = r[priceKey];
         if(Number.isFinite(p)) b.prices.push(p);
       }
-      // 轉回陣列並依時間排序
-      let arr = Array.from(map.values()).sort((a,b)=> a.date - b.date);
-      // 只取最後 N 個月（真的以「月」為單位）
+      let arr = Array.from(map.values()).sort((a,b)=> a.ts - b.ts);
       if(months && arr.length > months) arr = arr.slice(-months);
-      // 價格用「有值的平均」；沒有就回 null
       return arr.map(it=>({
-        x: it.date,
-        volume: it.vol,
+        x: it.ts,                                 // ← 用 UTC 時戳
+        volume: +it.vol || 0,
         price: it.prices.length ? (it.prices.reduce((s,v)=>s+v,0)/it.prices.length) : null
       }));
     }
@@ -223,7 +224,6 @@
       const dtypeText = el.dtype.value==='all' ? '中古屋+預售屋' : (el.dtype.value==='a' ? '中古屋' : '預售屋');
       el.title.textContent = `${el.city.value}｜${el.dist.value}｜${dtypeText}｜近 ${el.range.value} 個月`;
 
-      // 空集保護
       if(!data.length){
         el.download.disabled = true;
         el.nodata.style.display = 'block';
@@ -237,7 +237,7 @@
         type:'bar',
         label:'成交量(筆)',
         yAxisID:'y',
-        data:data.map(d=>({x:d.x, y:d.volume})),
+        data:data.map(d=>({x:d.x, y:+d.volume})),
         borderWidth:0,
         barThickness:12, maxBarThickness:14
       };
@@ -245,7 +245,7 @@
         type:'line',
         label:'均價(萬元/坪)',
         yAxisID:'y1',
-        data:data.map(d=>({x:d.x, y:d.price})),
+        data:data.map(d=>({x:d.x, y:(d.price==null?null:+d.price)})),
         pointRadius:2, tension:0, cubicInterpolationMode:'monotone', spanGaps:false
       };
 
@@ -258,7 +258,8 @@
           plugins:{ legend:{position:'top'}, tooltip:{enabled:true},
             zoom:{ pan:{enabled:true,mode:'x'}, zoom:{wheel:{enabled:true},pinch:{enabled:true},mode:'x'} } },
           scales:{
-            x:{ type:'time', offset:true, time:{ unit:'month', tooltipFormat:'yyyy-MM', displayFormats:{month:'yyyy-MM'} } },
+            x:{ type:'time',
+                time:{ unit:'month', tooltipFormat:'yyyy-MM', displayFormats:{month:'yyyy-MM'} } },
             y:{ position:'left', title:{display:true,text:'成交量(筆)'} },
             y1:{ position:'right', title:{display:true,text:'均價(萬元/坪)'}, grid:{drawOnChartArea:false} }
           }
@@ -266,7 +267,7 @@
       });
     }
 
-    // --------- 可靠抓取 CSV（pub 優先，gviz 後備；含逾時/重試/HTML 檢測）---------
+    // 可靠抓取（pub 優先、gviz 後備；逾時/重試/HTML 檢測）
     const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
     function fetchWithTimeout(url, ms){
       const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms);
@@ -292,7 +293,7 @@
     function loadFromText(text){
       Papa.parse(text, {
         header:true, skipEmptyLines:true,
-        worker:false, fastMode:false,                // ← 重要：含引號 CSV 不用 fastMode
+        worker:false, fastMode:false,
         transformHeader: (h)=> clean(h),
         transform: (v)=> clean(v),
         complete: (res)=>{
@@ -337,7 +338,7 @@
       const data = currentSeries();
       const header = ['ym','volume','price'];
       const csv = [header.join(',')].concat(
-        data.map(r => [fmtYM(r.x), r.volume ?? '', r.price ?? ''].join(','))
+        data.map(r => [fmtYM(new Date(r.x)), r.volume ?? '', r.price ?? ''].join(','))
       ).join('\n');
       const blob = new Blob(["\uFEFF"+csv], {type:'text/csv;charset=utf-8;'});
       const url = URL.createObjectURL(blob);
