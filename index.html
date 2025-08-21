@@ -1,139 +1,337 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
+<!doctype html>
+<html lang="zh-Hant">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>台灣各行政區｜價量趨勢</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <style>
-    body { font-family: sans-serif; margin: 20px; }
-    h1 { font-size: 1.5em; }
-    .controls { margin-bottom: 15px; }
-    .btn { margin-left: 5px; padding: 5px 10px; cursor: pointer; }
-    canvas { max-width: 100%; }
+    :root { --fg:#111; --muted:#6b7280; --card:#fff; --bg:#f7f7f8; --brand:#2563eb; --danger:#ef4444; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Noto Sans TC", Segoe UI, Roboto, Arial; color:var(--fg); background:var(--bg); }
+    header { position:sticky; top:0; backdrop-filter:saturate(120%) blur(6px); background:rgba(255,255,255,.85); border-bottom:1px solid #e5e7eb; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 18px; margin: 0; }
+    .card { background:var(--card); border:1px solid #e5e7eb; border-radius:14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .card .body { padding:16px; }
+    label { font-size:12px; color:var(--muted); display:block; }
+    select{ width:100%; margin-top:6px; padding:8px; border-radius:10px; border:1px solid #e5e7eb; background:#fff; }
+    .btn { padding:8px 12px; border-radius:10px; border:1px solid #e5e7eb; background:#fff; cursor:pointer; }
+    .btn:disabled{ opacity:.6; cursor:not-allowed; }
+    .row { display:flex; align-items:center; gap:8px; flex-wrap: wrap; }
+    .mt { margin-top: 8px; }
+    .muted { color:var(--muted); font-size:12px; }
+    .pill { display:inline-block; font-size:12px; padding:2px 8px; border:1px solid #e5e7eb; border-radius:999px; background:#fff; }
+    .pill.bad { border-color: var(--danger); color: var(--danger); }
+    canvas { width:100% !important; height: 380px !important; }
+    #debug { background:#f9fafb; border:1px dashed #e5e7eb; border-radius:12px; padding:12px; font-size:12px; white-space:pre-wrap; }
+    #debug .ok{ color:#065f46; }
+    #debug .err{ color:#b91c1c; }
   </style>
+  <!-- 依賴：PapaParse + Chart.js + 時間軸 + 縮放插件（CDN） -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
 </head>
 <body>
-  <h1>台灣各行政區｜價量趨勢</h1>
+  <header>
+    <div class="container row" style="gap:10px; align-items:center;">
+      <h1>台灣各行政區｜價量趨勢</h1>
+      <span id="status" class="pill">載入中…</span>
+    </div>
+  </header>
 
-  <div class="controls">
-    <label>時間範圍：
-      <select id="range">
-        <option value="3">近三個月</option>
-        <option value="6">近半年</option>
-        <option value="12">近一年</option>
-        <option value="24" selected>近兩年</option>
-      </select>
-    </label>
-    <button id="reload" class="btn">重新載入</button>
-    <button id="inspect" class="btn">檢查資料</button>
-  </div>
+  <main class="container">
+    <!-- 測試面板 -->
+    <div class="card mt">
+      <div class="body">
+        <strong>測試面板</strong>
+        <div id="debug" class="mt">尚未載入</div>
+        <div class="row mt">
+          <button id="reload" class="btn">重新載入</button>
+          <button id="copydbg" class="btn">複製面板內容</button>
+        </div>
+      </div>
+    </div>
 
-  <canvas id="chart"></canvas>
+    <div class="card mt">
+      <div class="body">
+        <div class="row">
+          <div>
+            <label>縣市</label>
+            <select id="city"></select>
+          </div>
+          <div>
+            <label>行政區</label>
+            <select id="dist"></select>
+          </div>
+          <div>
+            <label>資料別</label>
+            <select id="dtype">
+              <option value="all">中古屋+預售屋</option>
+              <option value="a">中古屋</option>
+              <option value="b">預售屋</option>
+            </select>
+          </div>
+          <div>
+            <label>時間範圍</label>
+            <select id="range">
+              <option value="3">近 3 個月</option>
+              <option value="6">近半年</option>
+              <option value="12">近一年</option>
+              <option value="24" selected>近兩年</option>
+            </select>
+          </div>
+          <div class="row mt" style="align-items:end;">
+            <input id="median" type="checkbox" />
+            <label for="median">以價格「中位數」顯示</label>
+          </div>
+        </div>
+        <div class="row mt">
+          <span id="meta" class="muted">尚未載入資料</span>
+          <button id="download" class="btn" disabled>下載目前檢視</button>
+        </div>
+        <div class="muted mt">可用滑鼠拖曳放大（框選區間），雙擊圖表可還原。</div>
+      </div>
+    </div>
 
-<script>
-const CSV_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
+    <div class="card mt">
+      <div class="body">
+        <div class="row" style="gap:6px; margin-bottom:6px;">
+          <strong id="title">載入中…</strong>
+        </div>
+        <canvas id="chart"></canvas>
+      </div>
+    </div>
+  </main>
 
-const el = {
-  range: document.getElementById('range'),
-  reload: document.getElementById('reload'),
-  inspect: document.getElementById('inspect'),
-  canvas: document.getElementById('chart')
-};
+  <script>
+    /* ====== 你只要改這兩個常數就能換資料來源 ====== */
+    const SHEET_ID = "1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc";
+    const GID = "0"; // 若你的資料在其他分頁，把 0 改成該分頁的 gid
+    /* =============================================== */
 
-let chart;
+    const URL_EXPORT = (cb)=> `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}&cb=${cb}`;
+    const URL_GVIZ   = (cb)=> `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${GID}&cb=${cb}`;
 
-function parseDate(str){
-  // 嘗試常見格式：202501、2025-01、2025/01、2025-01-01
-  if(/^[0-9]{6}$/.test(str)) return new Date(str.slice(0,4), str.slice(4,6)-1, 1);
-  if(str.includes('-')||str.includes('/')){
-    const parts=str.split(/[-/]/).map(p=>parseInt(p,10));
-    if(parts.length>=2) return new Date(parts[0], parts[1]-1, parts[2]||1);
-  }
-  return null;
-}
+    const el = {
+      city: document.getElementById('city'),
+      dist: document.getElementById('dist'),
+      dtype: document.getElementById('dtype'),
+      range: document.getElementById('range'),
+      median: document.getElementById('median'),
+      title: document.getElementById('title'),
+      download: document.getElementById('download'),
+      canvas: document.getElementById('chart'),
+      status: document.getElementById('status'),
+      meta: document.getElementById('meta'),
+      debug: document.getElementById('debug'),
+      reload: document.getElementById('reload'),
+      copydbg: document.getElementById('copydbg'),
+    };
 
-function loadFromUrl(){
-  const url = CSV_URL + (CSV_URL.includes('?')?'&':'?') + 'cb=' + Date.now();
-  Papa.parse(url, {
-    header:true, download:true, skipEmptyLines:true,
-    complete: (res)=>{
-      const data=res.data;
-      if(!data||!data.length){ alert("資料為空"); return; }
-      renderChart(data);
-    },
-    error: (err)=>alert("讀取失敗："+err.message)
-  });
-}
+    let rows = [];
+    let chart;
 
-function renderChart(rows){
-  const months=parseInt(el.range.value,10);
-  const now=new Date();
-  const cutoff=new Date(now.getFullYear(), now.getMonth()-months, 1);
+    function uniq(arr){ return Array.from(new Set(arr.filter(Boolean))); }
+    function setStatus(text, bad=false){ el.status.textContent = text; el.status.className = 'pill' + (bad?' bad':''); }
+    function fmtYM(d){ const y=d.getFullYear(); const m=(d.getMonth()+1).toString().padStart(2,'0'); return `${y}-${m}`; }
+    function logDebug(s){ el.debug.textContent = s; }
 
-  const grouped={};
-  rows.forEach(r=>{
-    const d=parseDate(r['交易年月']);
-    if(!d||d<cutoff) return;
-    const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    if(!grouped[key]) grouped[key]={成交量:0, 價格:0, 筆數:0};
-    grouped[key].成交量+=parseFloat(r['成交量']||0);
-    grouped[key].價格+=parseFloat(r['均價_萬元每坪_平均']||0);
-    grouped[key].筆數++;
-  });
+    // 解析 常見/民國 年月
+    function parseYM(cell){
+      if(cell == null) return NaN;
+      let s = String(cell).trim();
+      if(!s) return NaN;
+      s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'');
+      if(/^\d{5,6}$/.test(s)){ const y = parseInt(s.slice(0, s.length-2), 10), m = parseInt(s.slice(-2), 10);
+        if(y <= 1911) return new Date(1911 + y, m-1, 1);
+        if(y >= 1900) return new Date(y, m-1, 1);
+      }
+      const m1 = s.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
+      if(m1){ const y=parseInt(m1[1],10), mo=parseInt(m1[2],10); if(y>=1900 && mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
+      const m2 = s.match(/^(\d{2,3})-(\d{1,2})$/);
+      if(m2){ const y=1911+parseInt(m2[1],10), mo=parseInt(m2[2],10); if(mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
+      const d = new Date(s); if(!isNaN(d)) return new Date(d.getFullYear(), d.getMonth(), 1); return NaN;
+    }
 
-  const labels=Object.keys(grouped).sort();
-  const volumes=labels.map(k=>grouped[k].成交量);
-  const prices=labels.map(k=>grouped[k].筆數? grouped[k].價格/grouped[k].筆數 : 0);
+    // 去表頭空白 & 欄位容錯
+    function normalizeHeaders(obj){
+      const out={}; Object.keys(obj||{}).forEach(k=>{ const nk=String(k||'').trim(); out[nk]=obj[k]; }); return out;
+    }
+    function normalizeRows(data){
+      const norm = (data||[]).map(r=> normalizeHeaders(r)).map(r=>{
+        const ym = parseYM(r['交易年月']);
+        return {
+          ...r,
+          '縣市': r['縣市'],
+          '鄉鎮市區': r['鄉鎮市區'],
+          '資料別': (r['資料別'] ?? '').toString().trim().toLowerCase(),
+          '成交量': Number(String(r['成交量']||'').replace(/,/g,'')) || 0,
+          '均價_萬元每坪_平均': Number(r['均價_萬元每坪_平均']) || Number(r['均價_萬元每坪_平均數']) || Number(r['均價_每坪_平均']) || Number(r['平均單價']) || NaN,
+          '均價_萬元每坪_中位數': Number(r['均價_萬元每坪_中位數']) || Number(r['均價_每坪_中位數']) || NaN,
+          ym
+        };
+      }).filter(r=> !isNaN(r.ym) && r['縣市'] && r['鄉鎮市區']);
+      return norm;
+    }
 
-  if(chart) chart.destroy();
-  chart=new Chart(el.canvas,{
-    type:'bar',
-    data:{
-      labels:labels,
-      datasets:[
-        {
-          type:'bar',
-          label:'成交量',
-          data:volumes,
-          yAxisID:'y1',
-          backgroundColor:'rgba(75,192,192,0.5)',
-          barThickness:20   // 固定長條寬度
-        },
-        {
-          type:'line',
-          label:'均價(萬/坪)',
-          data:prices,
-          yAxisID:'y2',
-          borderColor:'rgba(255,99,132,1)',
-          fill:false
+    function populateCities(){
+      const cs = uniq(rows.map(r=>r['縣市']));
+      el.city.innerHTML = cs.map(c=>`<option value="${c}">${c}</option>`).join('');
+      el.city.value = cs[0] || '';
+      populateDistricts();
+    }
+    function populateDistricts(){
+      const ds = uniq(rows.filter(r=>r['縣市']===el.city.value).map(r=>r['鄉鎮市區']));
+      el.dist.innerHTML = ds.map(d=>`<option value="${d}">${d}</option>`).join('');
+      el.dist.value = ds[0] || '';
+      draw();
+    }
+
+    function currentSeries(){
+      const base = rows.filter(r=> r['縣市']===el.city.value && r['鄉鎮市區']===el.dist.value);
+      const filtered = el.dtype.value==='all' ? base : base.filter(r=> r['資料別']===el.dtype.value);
+      const sorted = filtered.sort((a,b)=> a.ym - b.ym);
+      const months = Number(el.range.value || 24);
+      const lastN = sorted.slice(-months);
+      const priceKey = el.median.checked ? '均價_萬元每坪_中位數' : '均價_萬元每坪_平均';
+      return lastN.map(d=>({ ym: fmtYM(d.ym), volume: d['成交量'], price: d[priceKey] }));
+    }
+
+    function draw(){
+      if(chart){ chart.destroy(); }
+      if(!rows.length || !el.city.value || !el.dist.value){
+        el.title.textContent = '資料尚未載入完成';
+        el.download.disabled = true; return;
+      }
+      const data = currentSeries();
+      const dtypeText = el.dtype.value==='all' ? '中古屋+預售屋' : (el.dtype.value==='a' ? '中古屋' : '預售屋');
+      el.title.textContent = `${el.city.value}｜${el.dist.value}｜${dtypeText}｜近 ${el.range.value} 個月`;
+      el.download.disabled = data.length===0;
+
+      const dsVolume = {
+        type:'bar', label:'成交量(筆)', yAxisID:'y',
+        data:data.map(d=>({x:d.ym, y:d.volume})),
+        borderWidth:0, barThickness: 12, maxBarThickness: 14, categoryPercentage: 1.0, barPercentage: 1.0
+      };
+      const dsPrice  = {
+        type:'line', label:'均價(萬元/坪)', yAxisID:'y1',
+        data:data.map(d=>({x:d.ym, y:d.price})), pointRadius:2, tension:0.25
+      };
+
+      chart = new Chart(el.canvas.getContext('2d'), {
+        type: 'bar',
+        data: { datasets: [dsVolume, dsPrice] },
+        options: {
+          maintainAspectRatio:false, animation:false, parsing:false, normalized:true,
+          interaction: { mode:'index', intersect:false },
+          plugins: { legend:{ position:'top' }, tooltip:{ enabled:true },
+            zoom:{ pan:{ enabled:true, mode:'x' }, zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' } } },
+          scales: {
+            x:{ type:'time', time:{ unit:'month', tooltipFormat:'yyyy-MM' } },
+            y:{ position:'left', title:{ display:true, text:'成交量(筆)' } },
+            y1:{ position:'right', title:{ display:true, text:'均價(萬元/坪)' }, grid:{ drawOnChartArea:false } }
+          }
         }
-      ]
-    },
-    options:{
-      responsive:true,
-      interaction:{mode:'index',intersect:false},
-      scales:{
-        y1:{type:'linear', position:'left', title:{display:true,text:'成交量'}},
-        y2:{type:'linear', position:'right', title:{display:true,text:'均價(萬/坪)'}, grid:{drawOnChartArea:false}}
+      });
+    }
+
+    function previewHead(text){
+      const lines = (text||'').split(/\r?\n/).slice(0,3).join("\n");
+      return lines || '（空字串）';
+    }
+    function seemsHTML(text){ return /<html|<!doctype/i.test((text||'').slice(0,200)); }
+
+    async function fetchText(url){
+      const t0 = performance.now();
+      const resp = await fetch(url, {mode:'cors', credentials:'omit'});
+      const text = await resp.text();
+      return { ok: resp.ok, status: resp.status, ms: Math.round(performance.now()-t0), text };
+    }
+
+    async function loadFromSheet(){
+      setStatus('載入中…');
+      const cb = Date.now();
+      let log = `▶ 嘗試 export 端點：\n${URL_EXPORT(cb)}\n`;
+      logDebug(log);
+
+      // ① 試 export?format=csv
+      let r1;
+      try { r1 = await fetchText(URL_EXPORT(cb)); }
+      catch(e){ r1 = { ok:false, status:'ERR', ms:0, text:String(e) }; }
+
+      log += `HTTP: ${r1.status}（${r1.ms}ms）\n前3行：\n${previewHead(r1.text)}\n\n`;
+      // 如果看起來不是 CSV（回 HTML），或沒成功，改走 gviz
+      if(!r1.ok || seemsHTML(r1.text)){
+        log += `▶ 改試 gviz 端點：\n${URL_GVIZ(cb)}\n`;
+        logDebug(log);
+        let r2;
+        try { r2 = await fetchText(URL_GVIZ(cb)); }
+        catch(e){ r2 = { ok:false, status:'ERR', ms:0, text:String(e) }; }
+        log += `HTTP: ${r2.status}（${r2.ms}ms）\n前3行：\n${previewHead(r2.text)}\n\n`;
+        logDebug(log);
+
+        if(!r2.ok || seemsHTML(r2.text)){
+          setStatus('載入失敗', true);
+          log += "❌ 兩個端點都不像是 CSV，請檢查：共享權限是否「擁有連結者可檢視」、GID 是否指到有資料的分頁。\n";
+          logDebug(log);
+          return;
+        }
+        // gviz 成功
+        const parsed = Papa.parse(r2.text, { header:true, skipEmptyLines:true });
+        finalizeLoad(parsed.data, r2.ms, log);
+      } else {
+        // export 成功
+        const parsed = Papa.parse(r1.text, { header:true, skipEmptyLines:true });
+        finalizeLoad(parsed.data, r1.ms, log);
       }
     }
-  });
-}
 
-// event
-el.range.addEventListener('change', loadFromUrl);
-el.reload.addEventListener('click', loadFromUrl);
-el.inspect.addEventListener('click', async ()=>{
-  try{
-    const url = CSV_URL + (CSV_URL.includes('?')?'&':'?') + 'cb=' + Date.now();
-    const resp = await fetch(url);
-    const text = await resp.text();
-    alert((text||'').slice(0,500) || '（空字串）');
-  }catch(e){ alert("抓取失敗："+e.message); }
-});
+    function finalizeLoad(raw, ms, log){
+      const before = raw?.length || 0;
+      rows = normalizeRows(raw || []);
+      const after = rows.length;
 
-loadFromUrl();
-</script>
+      if(!after){
+        setStatus('載入失敗（資料為空）', true);
+        log += `❌ 解析到 0 筆。原始筆數：${before}；請檢查表頭/欄位名與日期格式。\n`;
+        el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}`;
+        logDebug(log);
+        return;
+      }
+
+      setStatus(`已載入（${ms}ms）`);
+      const cities = uniq(rows.map(r=>r['縣市'])).slice(0,8).join('、');
+      el.meta.textContent = `共 ${after} 筆；範例縣市：${cities}${rows.length>8?'…':''}`;
+      log += `✅ 成功解析 ${after} 筆。範例縣市：${cities}\n`;
+      logDebug(log);
+      populateCities();
+    }
+
+    // 事件
+    el.city.addEventListener('change', populateDistricts);
+    el.dist.addEventListener('change', draw);
+    el.dtype.addEventListener('change', draw);
+    el.range.addEventListener('change', draw);
+    el.median.addEventListener('change', draw);
+    el.download.addEventListener('click', ()=>{
+      const data = currentSeries();
+      const header = ['ym','volume','price'];
+      const csv = [header.join(',')].concat(data.map(r=> header.map(h=>r[h]??'').join(','))).join('\n');
+      const blob = new Blob(["\uFEFF"+csv], {type:'text/csv;charset=utf-8;'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${el.city.value}_${el.dist.value}_${el.dtype.value}_${el.range.value}m.csv`;
+      a.click(); URL.revokeObjectURL(url);
+    });
+    el.reload.addEventListener('click', loadFromSheet);
+    el.copydbg.addEventListener('click', ()=>{
+      navigator.clipboard.writeText(el.debug.textContent || '').then(()=> alert('已複製面板內容'));
+    });
+
+    // 初始化
+    loadFromSheet();
+  </script>
 </body>
 </html>
