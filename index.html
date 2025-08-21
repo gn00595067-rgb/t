@@ -21,7 +21,8 @@
     .mt { margin-top: 8px; }
     .muted { color:var(--muted); font-size:12px; }
     .pill { display:inline-block; font-size:12px; padding:2px 8px; border:1px solid #e5e7eb; border-radius:999px; background:#fff; }
-    .pill.bad { border-color: #ef4444; color: #ef4444; }
+    .pill.bad { border-color: var(--danger); color: var(--danger); }
+    .nodata { text-align:center; padding:40px 8px; color:#9ca3af; }
     canvas { width:100% !important; height: 380px !important; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
@@ -84,14 +85,17 @@
         <div class="row" style="gap:6px; margin-bottom:6px;">
           <strong id="title">載入中…</strong>
         </div>
-        <canvas id="chart"></canvas>
+        <div id="plotWrap">
+          <canvas id="chart"></canvas>
+          <div id="nodata" class="nodata" style="display:none;">這個條件沒有資料</div>
+        </div>
       </div>
     </div>
   </main>
 
   <script>
-    // 你可以把 PUB_URL 換成「發佈到網路 output=csv」的連結，GVIZ_URL 做後備
-    const PUB_URL  = ""; // https://docs.google.com/spreadsheets/d/<ID>/pub?gid=0&single=true&output=csv
+    // 建議把 PUB_URL 換成你「發佈到網路 output=csv」的連結
+    const PUB_URL  = ""; // 例：https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/pub?gid=0&single=true&output=csv
     const GVIZ_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
 
     const el = {
@@ -105,6 +109,7 @@
       canvas: document.getElementById('chart'),
       status: document.getElementById('status'),
       meta: document.getElementById('meta'),
+      nodata: document.getElementById('nodata'),
     };
 
     let rows = [];
@@ -113,12 +118,7 @@
     const uniq = (arr)=> Array.from(new Set(arr.filter(Boolean)));
     const setStatus = (text, bad=false)=>{ el.status.textContent = text; el.status.className = 'pill' + (bad?' bad':''); };
     const fmtYM = (d)=> `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-
-    // 小工具：去 BOM + trim + 去首尾引號（多一層保險）
-    const clean = (s)=> String(s ?? '')
-      .replace(/^\uFEFF/, '')
-      .trim()
-      .replace(/^['"]+|['"]+$/g, '');
+    const clean = (s)=> String(s ?? '').replace(/^\uFEFF/,'').trim().replace(/^['"]+|['"]+$/g, '');
 
     function parseYM(cell){
       let s = clean(cell);
@@ -181,14 +181,36 @@
       draw();
     }
 
+    // --- 月彙整（關鍵）：把同月多筆合成一筆 ---
+    function aggregateSeries(baseRows, months, priceKey){
+      // 依月份做 Map
+      const map = new Map(); // key: 'YYYY-MM' -> { date, volumeSum, prices[] }
+      for(const r of baseRows){
+        const key = fmtYM(r.ym);
+        if(!map.has(key)) map.set(key, { date: new Date(r.ym.getFullYear(), r.ym.getMonth(), 1), vol:0, prices:[] });
+        const b = map.get(key);
+        b.vol += (Number.isFinite(r['成交量']) ? r['成交量'] : 0);
+        const p = r[priceKey];
+        if(Number.isFinite(p)) b.prices.push(p);
+      }
+      // 轉回陣列並依時間排序
+      let arr = Array.from(map.values()).sort((a,b)=> a.date - b.date);
+      // 只取最後 N 個月（真的以「月」為單位）
+      if(months && arr.length > months) arr = arr.slice(-months);
+      // 價格用「有值的平均」；沒有就回 null
+      return arr.map(it=>({
+        x: it.date,
+        volume: it.vol,
+        price: it.prices.length ? (it.prices.reduce((s,v)=>s+v,0)/it.prices.length) : null
+      }));
+    }
+
     function currentSeries(){
       const base = rows.filter(r=> r['縣市']===el.city.value && r['鄉鎮市區']===el.dist.value);
-      const filtered = el.dtype.value==='all' ? base : base.filter(r=> r['資料別']===el.dtype.value);
-      const sorted = filtered.sort((a,b)=> a.ym - b.ym);
+      const filtered = (el.dtype.value==='all') ? base : base.filter(r=> r['資料別']===el.dtype.value);
       const months = Number(el.range.value || 24);
-      const lastN = sorted.slice(-months);
       const priceKey = el.median.checked ? '均價_萬元每坪_中位數' : '均價_萬元每坪_平均';
-      return lastN.map(d=>({ x: d.ym, volume: d['成交量'], price: Number.isFinite(d[priceKey]) ? d[priceKey] : null }));
+      return aggregateSeries(filtered, months, priceKey);
     }
 
     function draw(){
@@ -200,12 +222,32 @@
       const data = currentSeries();
       const dtypeText = el.dtype.value==='all' ? '中古屋+預售屋' : (el.dtype.value==='a' ? '中古屋' : '預售屋');
       el.title.textContent = `${el.city.value}｜${el.dist.value}｜${dtypeText}｜近 ${el.range.value} 個月`;
-      el.download.disabled = data.length===0;
 
-      const dsVolume = { type:'bar', label:'成交量(筆)', yAxisID:'y',
-        data:data.map(d=>({x:d.x, y:d.volume})), borderWidth:0, barThickness:12, maxBarThickness:14 };
-      const dsPrice  = { type:'line', label:'均價(萬元/坪)', yAxisID:'y1',
-        data:data.map(d=>({x:d.x, y:d.price})), pointRadius:2, tension:0, cubicInterpolationMode:'monotone', spanGaps:false };
+      // 空集保護
+      if(!data.length){
+        el.download.disabled = true;
+        el.nodata.style.display = 'block';
+        return;
+      } else {
+        el.nodata.style.display = 'none';
+      }
+      el.download.disabled = false;
+
+      const dsVolume = {
+        type:'bar',
+        label:'成交量(筆)',
+        yAxisID:'y',
+        data:data.map(d=>({x:d.x, y:d.volume})),
+        borderWidth:0,
+        barThickness:12, maxBarThickness:14
+      };
+      const dsPrice  = {
+        type:'line',
+        label:'均價(萬元/坪)',
+        yAxisID:'y1',
+        data:data.map(d=>({x:d.x, y:d.price})),
+        pointRadius:2, tension:0, cubicInterpolationMode:'monotone', spanGaps:false
+      };
 
       chart = new Chart(el.canvas.getContext('2d'), {
         type:'bar',
@@ -224,7 +266,7 @@
       });
     }
 
-    // 可靠抓取：先 pub，再 gviz；含逾時/重試/HTML 檢測
+    // --------- 可靠抓取 CSV（pub 優先，gviz 後備；含逾時/重試/HTML 檢測）---------
     const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
     function fetchWithTimeout(url, ms){
       const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms);
@@ -250,8 +292,7 @@
     function loadFromText(text){
       Papa.parse(text, {
         header:true, skipEmptyLines:true,
-        worker:false,        // 保留 transform，所以關掉 worker
-        fastMode:false,      // ←← 這一行是關鍵修正：不要用 fastMode
+        worker:false, fastMode:false,                // ← 重要：含引號 CSV 不用 fastMode
         transformHeader: (h)=> clean(h),
         transform: (v)=> clean(v),
         complete: (res)=>{
@@ -305,6 +346,7 @@
       a.click(); URL.revokeObjectURL(url);
     });
 
+    // 初始化
     load();
   </script>
 </body>
