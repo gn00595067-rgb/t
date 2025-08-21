@@ -11,6 +11,7 @@
     header { position:sticky; top:0; backdrop-filter:saturate(120%) blur(6px); background:rgba(255,255,255,.85); border-bottom:1px solid #e5e7eb; }
     .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
     h1 { font-size: 18px; margin: 0; }
+    .grid { display:grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 12px; }
     .card { background:var(--card); border:1px solid #e5e7eb; border-radius:14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
     .card .body { padding:16px; }
     label { font-size:12px; color:var(--muted); display:block; }
@@ -18,13 +19,14 @@
     .btn { padding:8px 12px; border-radius:10px; border:1px solid #e5e7eb; background:#fff; cursor:pointer; }
     .btn:disabled{ opacity:.6; cursor:not-allowed; }
     .row { display:flex; align-items:center; gap:8px; flex-wrap: wrap; }
+    .right { display:flex; justify-content:flex-end; }
     .mt { margin-top: 8px; }
     .muted { color:var(--muted); font-size:12px; }
+    canvas { width:100% !important; height: 380px !important; }
     .pill { display:inline-block; font-size:12px; padding:2px 8px; border:1px solid #e5e7eb; border-radius:999px; background:#fff; }
     .pill.bad { border-color: var(--danger); color: var(--danger); }
-    canvas { width:100% !important; height: 380px !important; }
   </style>
-  <!-- 依賴：PapaParse + Chart.js + 時間軸 + 縮放插件（CDN） -->
+  <!-- CDN: PapaParse + Chart.js + Zoom plugin -->
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
@@ -54,7 +56,7 @@
             <label>資料別</label>
             <select id="dtype">
               <option value="all">中古屋+預售屋</option>
-              <option value="a">一般買賣</option>
+              <option value="a">中古屋</option>
               <option value="b">預售屋</option>
             </select>
           </div>
@@ -75,6 +77,7 @@
         <div class="row mt">
           <span id="meta" class="muted">尚未載入資料</span>
           <button id="download" class="btn" disabled>下載目前檢視</button>
+          <button id="reload" class="btn">重新載入</button>
         </div>
         <div class="muted mt">可用滑鼠拖曳放大（框選區間），雙擊圖表可還原。</div>
       </div>
@@ -91,7 +94,9 @@
   </main>
 
   <script>
-    // ✅ 寫死你的 Google Sheet CSV 連結：如資料不在第一分頁，改 gid
+    // ① 在這裡「寫死」你的 Google Sheet CSV 連結（請替換 gid 為資料所在分頁）
+    // 建議格式（gviz CSV）：
+    // https://docs.google.com/spreadsheets/d/【試算表ID】/gviz/tq?tqx=out:csv&gid=【分頁GID】
     const CSV_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
 
     const el = {
@@ -102,6 +107,7 @@
       median: document.getElementById('median'),
       title: document.getElementById('title'),
       download: document.getElementById('download'),
+      reload: document.getElementById('reload'),
       canvas: document.getElementById('chart'),
       status: document.getElementById('status'),
       meta: document.getElementById('meta'),
@@ -114,52 +120,34 @@
     function setStatus(text, bad=false){ el.status.textContent = text; el.status.className = 'pill' + (bad?' bad':''); }
     function fmtYM(d){ const y=d.getFullYear(); const m=(d.getMonth()+1).toString().padStart(2,'0'); return `${y}-${m}`; }
 
-    // 解析多種「交易年月」：YYYY-MM / YYYY/MM / YYYYMM / YYYY-MM-DD / 民國年 11307、113-07
+    // 多格式 交易年月 解析：YYYY-MM / YYYY/MM / YYYYMM / YYYY-MM-DD / ROC e.g., 11307
     function parseYM(cell){
       if(cell == null) return NaN;
       let s = String(cell).trim();
       if(!s) return NaN;
       s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'');
       s = s.replace(/-+/g,'-').replace(/^-|-$/g,'');
-
       // 純數字：YYYYMM 或 ROCYYMM（如 11307）
       if(/^\d{5,6}$/.test(s)){
         const y = parseInt(s.slice(0, s.length-2), 10);
         const m = parseInt(s.slice(-2), 10);
         if(y <= 1911){ // 民國年
-          const yy = 1911 + y;
-          return new Date(yy, m-1, 1);
-        } else if(y >= 1900){ // 西元 YYYYMM
+          const yy = 1911 + y; return new Date(yy, m-1, 1);
+        } else if(y >= 1900){ // 西元
           return new Date(y, m-1, 1);
         }
       }
       // YYYY-MM(-DD)?
       const m1 = s.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
-      if(m1){
-        const y = parseInt(m1[1],10), mo=parseInt(m1[2],10);
-        if(y >= 1900 && mo>=1 && mo<=12) return new Date(y, mo-1, 1);
-      }
-      // 民國年 113-07
+      if(m1){ const y=parseInt(m1[1],10), mo=parseInt(m1[2],10); if(y>=1900 && mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
+      // ROC formats like 113-07
       const m2 = s.match(/^(\d{2,3})-(\d{1,2})$/);
-      if(m2){
-        const y = 1911 + parseInt(m2[1],10);
-        const mo = parseInt(m2[2],10);
-        if(mo>=1 && mo<=12) return new Date(y, mo-1, 1);
-      }
+      if(m2){ const y=1911+parseInt(m2[1],10), mo=parseInt(m2[2],10); if(mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
       // Fallback
-      const d = new Date(s);
-      if(!isNaN(d)) return new Date(d.getFullYear(), d.getMonth(), 1);
-      return NaN;
+      const d = new Date(s); if(!isNaN(d)) return new Date(d.getFullYear(), d.getMonth(), 1); return NaN;
     }
 
-    // 表頭修整（去空白）
-    function normalizeHeaders(obj){
-      const out={};
-      Object.keys(obj||{}).forEach(k=>{ const nk=String(k||'').trim(); out[nk]=obj[k]; });
-      return out;
-    }
-
-    // 欄位標準化與容錯
+    function normalizeHeaders(obj){ const out={}; Object.keys(obj||{}).forEach(k=>{ const nk=String(k||'').trim(); out[nk]=obj[k]; }); return out; }
     function normalizeRows(data){
       const norm = (data||[]).map(r=> normalizeHeaders(r)).map(r=>{
         const ym = parseYM(r['交易年月']);
@@ -169,7 +157,7 @@
           '鄉鎮市區': r['鄉鎮市區'],
           '資料別': (r['資料別'] ?? '').toString().trim().toLowerCase(),
           '成交量': Number(r['成交量']) || 0,
-          '均價_萬元每坪_平均': Number(r['均價_萬元每坪_平均']) || Number(r['均價_萬元每坪_平均數']) || Number(r['均價_每坪_平均']) || Number(r['平均單價']) || NaN,
+          '均價_萬元每坪_平均': Number(r['均價_萬元每坪_平均']) || Number(r['均價_萬元每坪_平均數']) || Number(r['均價_每坪_平均']) || NaN,
           '均價_萬元每坪_中位數': Number(r['均價_萬元每坪_中位數']) || Number(r['均價_每坪_中位數']) || NaN,
           ym
         };
@@ -207,47 +195,32 @@
         el.download.disabled = true; return;
       }
       const data = currentSeries();
-      el.title.textContent = `${el.city.value}｜${el.dist.value}｜${el.dtype.value==='all'?'a+b':el.dtype.value}｜近 ${el.range.value} 個月`;
+      const dtypeText = el.dtype.value==='all' ? '中古屋+預售屋' : (el\.dtype\.value==='a' ? '中古屋' : '預售屋');
+el.title.textContent = `${el.city.value}｜${el.dist.value}｜${dtypeText}｜近 ${el.range.value} 個月`;
       el.download.disabled = data.length===0;
 
-      const dsVolume = { type:'bar', label:'成交量(筆)', yAxisID:'y', data:data.map(d=>({x:d.ym, y:d.volume})), borderWidth:0 };
+      const dsVolume = { type:'bar', label:'成交量(筆)', yAxisID:'y', data:data.map(d=>({x:d.ym, y:d.volume})), borderWidth:0, barThickness: 10, maxBarThickness: 12, categoryPercentage: 1.0, barPercentage: 1.0 };
       const dsPrice  = { type:'line', label:'均價(萬元/坪)', yAxisID:'y1', data:data.map(d=>({x:d.ym, y:d.price})), pointRadius:2, tension:0.25 };
 
       chart = new Chart(el.canvas.getContext('2d'), {
-        type: 'bar',
-        data: { datasets: [dsVolume, dsPrice] },
+        type: 'bar', data: { datasets: [dsVolume, dsPrice] },
         options: {
           maintainAspectRatio:false,
           interaction: { mode:'index', intersect:false },
-          plugins: {
-            legend:{ position:'top' },
-            tooltip:{ enabled:true },
-            zoom:{ pan:{ enabled:true, mode:'x' }, zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' } }
-          },
-          scales: {
-            x:{ type:'time', time:{ unit:'month', tooltipFormat:'yyyy-MM' } },
-            y:{ position:'left', title:{ display:true, text:'成交量(筆)' } },
-            y1:{ position:'right', title:{ display:true, text:'均價(萬元/坪)' }, grid:{ drawOnChartArea:false } }
-          }
+          plugins: { legend:{ position:'top' }, tooltip:{ enabled:true }, zoom:{ pan:{ enabled:true, mode:'x' }, zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' } } },
+          scales: { x:{ type:'time', time:{ unit:'month', tooltipFormat:'yyyy-MM' } }, y:{ position:'left', title:{ display:true, text:'成交量(筆)' } }, y1:{ position:'right', title:{ display:true, text:'均價(萬元/坪)' }, grid:{ drawOnChartArea:false } } }
         }
       });
     }
 
     function loadFromUrl(){
       setStatus('載入中…');
-      // 加上 cache-buster，降低 Google 快取影響
-      const url = CSV_URL + (CSV_URL.includes('?') ? '&' : '?') + 'cb=' + Date.now();
-      Papa.parse(url, {
-        header:true, download:true, skipEmptyLines:true,
+      Papa.parse(CSV_URL, { header:true, download:true, skipEmptyLines:true,
         complete: (res)=>{
           const before = res.data?.length || 0;
           rows = normalizeRows(res.data || []);
           const after = rows.length;
-          if(!after){
-            setStatus('載入失敗（資料為空）', true);
-            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。請檢查權限/欄位/日期格式，或確認 gid 是否為資料分頁。`;
-            return;
-          }
+          if(!after){ setStatus('載入失敗（資料為空）', true); el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。請檢查權限/欄位/日期格式。`; return; }
           setStatus('已載入');
           const cities = uniq(rows.map(r=>r['縣市'])).slice(0,8).join('、');
           el.meta.textContent = `共 ${after} 筆；範例縣市：${cities}${rows.length>8?'…':''}`;
@@ -257,7 +230,7 @@
       });
     }
 
-    // 事件
+    // events
     el.city.addEventListener('change', populateDistricts);
     el.dist.addEventListener('change', draw);
     el.dtype.addEventListener('change', draw);
@@ -273,8 +246,9 @@
       a.href = url; a.download = `${el.city.value}_${el.dist.value}_${el.dtype.value}_${el.range.value}m.csv`;
       a.click(); URL.revokeObjectURL(url);
     });
+    el.reload.addEventListener('click', loadFromUrl);
 
-    // 初始化
+    // init
     loadFromUrl();
   </script>
 </body>
