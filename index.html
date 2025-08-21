@@ -23,9 +23,6 @@
     .pill { display:inline-block; font-size:12px; padding:2px 8px; border:1px solid #e5e7eb; border-radius:999px; background:#fff; }
     .pill.bad { border-color: var(--danger); color: var(--danger); }
     canvas { width:100% !important; height: 380px !important; }
-    #debug { background:#f9fafb; border:1px dashed #e5e7eb; border-radius:12px; padding:12px; font-size:12px; white-space:pre-wrap; }
-    #debug .ok{ color:#065f46; }
-    #debug .err{ color:#b91c1c; }
   </style>
   <!-- 依賴：PapaParse + Chart.js + 時間軸 + 縮放插件（CDN） -->
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
@@ -42,18 +39,6 @@
   </header>
 
   <main class="container">
-    <!-- 測試面板 -->
-    <div class="card mt">
-      <div class="body">
-        <strong>測試面板</strong>
-        <div id="debug" class="mt">尚未載入</div>
-        <div class="row mt">
-          <button id="reload" class="btn">重新載入</button>
-          <button id="copydbg" class="btn">複製面板內容</button>
-        </div>
-      </div>
-    </div>
-
     <div class="card mt">
       <div class="body">
         <div class="row">
@@ -106,13 +91,8 @@
   </main>
 
   <script>
-    /* ====== 你只要改這兩個常數就能換資料來源 ====== */
-    const SHEET_ID = "1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc";
-    const GID = "0"; // 若你的資料在其他分頁，把 0 改成該分頁的 gid
-    /* =============================================== */
-
-    const URL_EXPORT = (cb)=> `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}&cb=${cb}`;
-    const URL_GVIZ   = (cb)=> `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${GID}&cb=${cb}`;
+    // ✅ 寫死你的 Google Sheet CSV 連結：如資料不在第一分頁，改 gid
+    const CSV_URL = "https://docs.google.com/spreadsheets/d/1Jv2mEjotjAy215KM7b9uHfIi90hcCBKnEZFeyQcr4kc/gviz/tq?tqx=out:csv&gid=0";
 
     const el = {
       city: document.getElementById('city'),
@@ -125,9 +105,6 @@
       canvas: document.getElementById('chart'),
       status: document.getElementById('status'),
       meta: document.getElementById('meta'),
-      debug: document.getElementById('debug'),
-      reload: document.getElementById('reload'),
-      copydbg: document.getElementById('copydbg'),
     };
 
     let rows = [];
@@ -136,29 +113,53 @@
     function uniq(arr){ return Array.from(new Set(arr.filter(Boolean))); }
     function setStatus(text, bad=false){ el.status.textContent = text; el.status.className = 'pill' + (bad?' bad':''); }
     function fmtYM(d){ const y=d.getFullYear(); const m=(d.getMonth()+1).toString().padStart(2,'0'); return `${y}-${m}`; }
-    function logDebug(s){ el.debug.textContent = s; }
 
-    // 解析 常見/民國 年月
+    // 解析多種「交易年月」：YYYY-MM / YYYY/MM / YYYYMM / YYYY-MM-DD / 民國年 11307、113-07
     function parseYM(cell){
       if(cell == null) return NaN;
       let s = String(cell).trim();
       if(!s) return NaN;
-      s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'');
-      if(/^\d{5,6}$/.test(s)){ const y = parseInt(s.slice(0, s.length-2), 10), m = parseInt(s.slice(-2), 10);
-        if(y <= 1911) return new Date(1911 + y, m-1, 1);
-        if(y >= 1900) return new Date(y, m-1, 1);
+      s = s.replace(/[年月\/\.]/g, '-').replace(/[日]/g,'');
+      s = s.replace(/-+/g,'-').replace(/^-|-$/g,'');
+
+      // 純數字：YYYYMM 或 ROCYYMM（如 11307）
+      if(/^\d{5,6}$/.test(s)){
+        const y = parseInt(s.slice(0, s.length-2), 10);
+        const m = parseInt(s.slice(-2), 10);
+        if(y <= 1911){ // 民國年
+          const yy = 1911 + y;
+          return new Date(yy, m-1, 1);
+        } else if(y >= 1900){ // 西元 YYYYMM
+          return new Date(y, m-1, 1);
+        }
       }
+      // YYYY-MM(-DD)?
       const m1 = s.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
-      if(m1){ const y=parseInt(m1[1],10), mo=parseInt(m1[2],10); if(y>=1900 && mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
+      if(m1){
+        const y = parseInt(m1[1],10), mo=parseInt(m1[2],10);
+        if(y >= 1900 && mo>=1 && mo<=12) return new Date(y, mo-1, 1);
+      }
+      // 民國年 113-07
       const m2 = s.match(/^(\d{2,3})-(\d{1,2})$/);
-      if(m2){ const y=1911+parseInt(m2[1],10), mo=parseInt(m2[2],10); if(mo>=1 && mo<=12) return new Date(y, mo-1, 1); }
-      const d = new Date(s); if(!isNaN(d)) return new Date(d.getFullYear(), d.getMonth(), 1); return NaN;
+      if(m2){
+        const y = 1911 + parseInt(m2[1],10);
+        const mo = parseInt(m2[2],10);
+        if(mo>=1 && mo<=12) return new Date(y, mo-1, 1);
+      }
+      // Fallback
+      const d = new Date(s);
+      if(!isNaN(d)) return new Date(d.getFullYear(), d.getMonth(), 1);
+      return NaN;
     }
 
-    // 去表頭空白 & 欄位容錯
+    // 表頭修整（去空白）
     function normalizeHeaders(obj){
-      const out={}; Object.keys(obj||{}).forEach(k=>{ const nk=String(k||'').trim(); out[nk]=obj[k]; }); return out;
+      const out={};
+      Object.keys(obj||{}).forEach(k=>{ const nk=String(k||'').trim(); out[nk]=obj[k]; });
+      return out;
     }
+
+    // 欄位標準化與容錯
     function normalizeRows(data){
       const norm = (data||[]).map(r=> normalizeHeaders(r)).map(r=>{
         const ym = parseYM(r['交易年月']);
@@ -167,7 +168,7 @@
           '縣市': r['縣市'],
           '鄉鎮市區': r['鄉鎮市區'],
           '資料別': (r['資料別'] ?? '').toString().trim().toLowerCase(),
-          '成交量': Number(String(r['成交量']||'').replace(/,/g,'')) || 0,
+          '成交量': Number(r['成交量']) || 0,
           '均價_萬元每坪_平均': Number(r['均價_萬元每坪_平均']) || Number(r['均價_萬元每坪_平均數']) || Number(r['均價_每坪_平均']) || Number(r['平均單價']) || NaN,
           '均價_萬元每坪_中位數': Number(r['均價_萬元每坪_中位數']) || Number(r['均價_每坪_中位數']) || NaN,
           ym
@@ -210,24 +211,36 @@
       el.title.textContent = `${el.city.value}｜${el.dist.value}｜${dtypeText}｜近 ${el.range.value} 個月`;
       el.download.disabled = data.length===0;
 
+      // 固定長條寬度，避免時間縮短時變太胖
       const dsVolume = {
-        type:'bar', label:'成交量(筆)', yAxisID:'y',
+        type:'bar',
+        label:'成交量(筆)',
+        yAxisID:'y',
         data:data.map(d=>({x:d.ym, y:d.volume})),
-        borderWidth:0, barThickness: 12, maxBarThickness: 14, categoryPercentage: 1.0, barPercentage: 1.0
+        borderWidth:0,
+        barThickness: 12,
+        maxBarThickness: 14
       };
       const dsPrice  = {
-        type:'line', label:'均價(萬元/坪)', yAxisID:'y1',
-        data:data.map(d=>({x:d.ym, y:d.price})), pointRadius:2, tension:0.25
+        type:'line',
+        label:'均價(萬元/坪)',
+        yAxisID:'y1',
+        data:data.map(d=>({x:d.ym, y:d.price})),
+        pointRadius:2,
+        tension:0.25
       };
 
       chart = new Chart(el.canvas.getContext('2d'), {
         type: 'bar',
         data: { datasets: [dsVolume, dsPrice] },
         options: {
-          maintainAspectRatio:false, animation:false, parsing:false, normalized:true,
+          maintainAspectRatio:false,
           interaction: { mode:'index', intersect:false },
-          plugins: { legend:{ position:'top' }, tooltip:{ enabled:true },
-            zoom:{ pan:{ enabled:true, mode:'x' }, zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' } } },
+          plugins: {
+            legend:{ position:'top' },
+            tooltip:{ enabled:true },
+            zoom:{ pan:{ enabled:true, mode:'x' }, zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' } }
+          },
           scales: {
             x:{ type:'time', time:{ unit:'month', tooltipFormat:'yyyy-MM' } },
             y:{ position:'left', title:{ display:true, text:'成交量(筆)' } },
@@ -237,76 +250,28 @@
       });
     }
 
-    function previewHead(text){
-      const lines = (text||'').split(/\r?\n/).slice(0,3).join("\n");
-      return lines || '（空字串）';
-    }
-    function seemsHTML(text){ return /<html|<!doctype/i.test((text||'').slice(0,200)); }
-
-    async function fetchText(url){
-      const t0 = performance.now();
-      const resp = await fetch(url, {mode:'cors', credentials:'omit'});
-      const text = await resp.text();
-      return { ok: resp.ok, status: resp.status, ms: Math.round(performance.now()-t0), text };
-    }
-
-    async function loadFromSheet(){
+    function loadFromUrl(){
       setStatus('載入中…');
-      const cb = Date.now();
-      let log = `▶ 嘗試 export 端點：\n${URL_EXPORT(cb)}\n`;
-      logDebug(log);
-
-      // ① 試 export?format=csv
-      let r1;
-      try { r1 = await fetchText(URL_EXPORT(cb)); }
-      catch(e){ r1 = { ok:false, status:'ERR', ms:0, text:String(e) }; }
-
-      log += `HTTP: ${r1.status}（${r1.ms}ms）\n前3行：\n${previewHead(r1.text)}\n\n`;
-      // 如果看起來不是 CSV（回 HTML），或沒成功，改走 gviz
-      if(!r1.ok || seemsHTML(r1.text)){
-        log += `▶ 改試 gviz 端點：\n${URL_GVIZ(cb)}\n`;
-        logDebug(log);
-        let r2;
-        try { r2 = await fetchText(URL_GVIZ(cb)); }
-        catch(e){ r2 = { ok:false, status:'ERR', ms:0, text:String(e) }; }
-        log += `HTTP: ${r2.status}（${r2.ms}ms）\n前3行：\n${previewHead(r2.text)}\n\n`;
-        logDebug(log);
-
-        if(!r2.ok || seemsHTML(r2.text)){
-          setStatus('載入失敗', true);
-          log += "❌ 兩個端點都不像是 CSV，請檢查：共享權限是否「擁有連結者可檢視」、GID 是否指到有資料的分頁。\n";
-          logDebug(log);
-          return;
-        }
-        // gviz 成功
-        const parsed = Papa.parse(r2.text, { header:true, skipEmptyLines:true });
-        finalizeLoad(parsed.data, r2.ms, log);
-      } else {
-        // export 成功
-        const parsed = Papa.parse(r1.text, { header:true, skipEmptyLines:true });
-        finalizeLoad(parsed.data, r1.ms, log);
-      }
-    }
-
-    function finalizeLoad(raw, ms, log){
-      const before = raw?.length || 0;
-      rows = normalizeRows(raw || []);
-      const after = rows.length;
-
-      if(!after){
-        setStatus('載入失敗（資料為空）', true);
-        log += `❌ 解析到 0 筆。原始筆數：${before}；請檢查表頭/欄位名與日期格式。\n`;
-        el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}`;
-        logDebug(log);
-        return;
-      }
-
-      setStatus(`已載入（${ms}ms）`);
-      const cities = uniq(rows.map(r=>r['縣市'])).slice(0,8).join('、');
-      el.meta.textContent = `共 ${after} 筆；範例縣市：${cities}${rows.length>8?'…':''}`;
-      log += `✅ 成功解析 ${after} 筆。範例縣市：${cities}\n`;
-      logDebug(log);
-      populateCities();
+      // 加上 cache-buster，降低 Google 快取影響
+      const url = CSV_URL + (CSV_URL.includes('?') ? '&' : '?') + 'cb=' + Date.now();
+      Papa.parse(url, {
+        header:true, download:true, skipEmptyLines:true,
+        complete: (res)=>{
+          const before = res.data?.length || 0;
+          rows = normalizeRows(res.data || []);
+          const after = rows.length;
+          if(!after){
+            setStatus('載入失敗（資料為空）', true);
+            el.meta.textContent = `原始筆數：${before}｜解析後筆數：${after}。請檢查權限/欄位/日期格式，或確認 gid 是否為資料分頁。`;
+            return;
+          }
+          setStatus('已載入');
+          const cities = uniq(rows.map(r=>r['縣市'])).slice(0,8).join('、');
+          el.meta.textContent = `共 ${after} 筆；範例縣市：${cities}${rows.length>8?'…':''}`;
+          populateCities();
+        },
+        error: (err)=>{ console.error(err); setStatus('載入失敗', true); alert('載入失敗：' + (err?.message || '未知錯誤')); }
+      });
     }
 
     // 事件
@@ -325,13 +290,9 @@
       a.href = url; a.download = `${el.city.value}_${el.dist.value}_${el.dtype.value}_${el.range.value}m.csv`;
       a.click(); URL.revokeObjectURL(url);
     });
-    el.reload.addEventListener('click', loadFromSheet);
-    el.copydbg.addEventListener('click', ()=>{
-      navigator.clipboard.writeText(el.debug.textContent || '').then(()=> alert('已複製面板內容'));
-    });
 
     // 初始化
-    loadFromSheet();
+    loadFromUrl();
   </script>
 </body>
 </html>
